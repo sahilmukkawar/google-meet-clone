@@ -82,7 +82,7 @@ func main() {
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	}).Methods("GET")
+	}).Methods("GET", "OPTIONS")
 	
 	// CORS setup with more specific options
 	c := cors.New(cors.Options{
@@ -93,10 +93,21 @@ func main() {
 		AllowCredentials: true,
 		MaxAge:           300,
 		Debug:            true,
+		AllowOriginFunc: func(origin string) bool {
+			log.Printf("Request origin: %s", origin)
+			return true
+		},
 	})
 	
 	// Apply CORS middleware to router
 	handler := c.Handler(r)
+	
+	// Add logging middleware
+	loggedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Incoming request: %s %s", r.Method, r.URL.Path)
+		log.Printf("Request headers: %v", r.Header)
+		handler.ServeHTTP(w, r)
+	})
 	
 	// Determine port
 	port := os.Getenv("PORT")
@@ -107,7 +118,7 @@ func main() {
 	// Create server with timeouts
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      handler,
+		Handler:      loggedHandler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,

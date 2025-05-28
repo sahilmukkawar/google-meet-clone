@@ -118,9 +118,20 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT);
 
   try {
+    // Ensure headers are properly set
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Origin': window.location.origin,
+      ...options.headers,
+    };
+
     const response = await fetch(url, {
       ...options,
+      headers,
       signal: controller.signal,
+      mode: 'cors',
+      credentials: 'include',
     });
     clearTimeout(timeoutId);
     return response;
@@ -142,15 +153,8 @@ async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<A
       };
     }
 
-    const headers: HeadersInit = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      ...options.headers,
-    };
-    
     const response = await fetchWithTimeout(`${API_URL}${url}`, {
       ...options,
-      headers,
       mode: 'cors',
       credentials: 'include',
     });
@@ -198,16 +202,12 @@ async function fetchWithAuth<T>(url: string, options: RequestInit = {}): Promise
       };
     }
     
-    const headers: HeadersInit = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${token}`,
-      ...options.headers,
-    };
-    
     const response = await fetchWithTimeout(`${API_URL}${url}`, {
       ...options,
-      headers,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        ...options.headers,
+      },
       mode: 'cors',
       credentials: 'include',
     });
