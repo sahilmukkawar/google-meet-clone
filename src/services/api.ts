@@ -71,7 +71,15 @@ async function handleResponse<T>(response: Response, retryCount = 0): Promise<Ap
     // Try to parse JSON
     let data;
     try {
-      data = await response.json();
+      const text = await response.text();
+      if (!text) {
+        return {
+          success: false,
+          data: null,
+          error: 'Empty response received'
+        };
+      }
+      data = JSON.parse(text);
     } catch (e) {
       // If JSON parsing fails and we haven't exceeded retry limit, try again
       if (retryCount < MAX_RETRIES) {
@@ -134,6 +142,12 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise
       mode: 'cors',
       credentials: 'include',
     });
+
+    // Check for network errors
+    if (!response.ok && !response.headers.get('content-type')?.includes('application/json')) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
     clearTimeout(timeoutId);
     return response;
   } catch (error) {

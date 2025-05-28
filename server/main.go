@@ -49,6 +49,10 @@ type Response struct {
 func jsonMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Access-Control-Allow-Origin", "https://famous-sprite-14c531.netlify.app")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -149,10 +153,8 @@ func sendJSONResponse(w http.ResponseWriter, statusCode int, response Response) 
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 	
-	// Handle preflight requests
-	if statusCode == http.StatusOK {
-		w.WriteHeader(statusCode)
-	}
+	// Set status code
+	w.WriteHeader(statusCode)
 	
 	// Marshal the response
 	jsonData, err := json.Marshal(response)
