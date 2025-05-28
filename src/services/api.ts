@@ -28,9 +28,27 @@ interface MeetingResponse {
 // Retry configuration
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // 1 second
+const TIMEOUT = 10000; // 10 seconds
 
 // Helper function to delay execution
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Helper function to check if server is reachable
+async function checkServerHealth(): Promise<boolean> {
+  try {
+    const response = await fetch(`${API_URL.replace('/api', '')}/health`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json'
+      },
+      mode: 'cors',
+    });
+    return response.ok;
+  } catch (error) {
+    console.error('Server health check failed:', error);
+    return false;
+  }
+}
 
 async function handleResponse<T>(response: Response, retryCount = 0): Promise<ApiResponse<T>> {
   try {
@@ -95,15 +113,42 @@ async function handleResponse<T>(response: Response, retryCount = 0): Promise<Ap
   }
 }
 
+async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
+}
+
 async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
   try {
+    // Check server health first
+    const isHealthy = await checkServerHealth();
+    if (!isHealthy) {
+      return {
+        success: false,
+        data: null,
+        error: 'Server is not responding. Please try again later.'
+      };
+    }
+
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
       ...options.headers,
     };
     
-    const response = await fetch(`${API_URL}${url}`, {
+    const response = await fetchWithTimeout(`${API_URL}${url}`, {
       ...options,
       headers,
       mode: 'cors',
@@ -123,6 +168,16 @@ async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<A
 
 async function fetchWithAuth<T>(url: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
   try {
+    // Check server health first
+    const isHealthy = await checkServerHealth();
+    if (!isHealthy) {
+      return {
+        success: false,
+        data: null,
+        error: 'Server is not responding. Please try again later.'
+      };
+    }
+
     const authStorage = localStorage.getItem('auth-storage');
     if (!authStorage) {
       return { 
@@ -150,7 +205,7 @@ async function fetchWithAuth<T>(url: string, options: RequestInit = {}): Promise
       ...options.headers,
     };
     
-    const response = await fetch(`${API_URL}${url}`, {
+    const response = await fetchWithTimeout(`${API_URL}${url}`, {
       ...options,
       headers,
       mode: 'cors',

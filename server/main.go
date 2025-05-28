@@ -78,6 +78,12 @@ func main() {
 	api.HandleFunc("/meetings", getMeetingsHandler).Methods("GET", "OPTIONS")
 	api.HandleFunc("/meetings/{id}", getMeetingHandler).Methods("GET", "OPTIONS")
 	
+	// Health check endpoint
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}).Methods("GET")
+	
 	// CORS setup with more specific options
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
@@ -98,9 +104,18 @@ func main() {
 		port = "8080"
 	}
 	
+	// Create server with timeouts
+	server := &http.Server{
+		Addr:         ":" + port,
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	
 	// Start server
 	log.Printf("Server starting on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, handler))
+	log.Fatal(server.ListenAndServe())
 }
 
 func sendJSONResponse(w http.ResponseWriter, statusCode int, response Response) {
@@ -109,7 +124,11 @@ func sendJSONResponse(w http.ResponseWriter, statusCode int, response Response) 
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
-	w.WriteHeader(statusCode)
+	
+	// Handle preflight requests
+	if statusCode == http.StatusOK {
+		w.WriteHeader(statusCode)
+	}
 	
 	// Marshal the response
 	jsonData, err := json.Marshal(response)
