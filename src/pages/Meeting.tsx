@@ -1,246 +1,126 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useMeetingStore } from '../stores/meetingStore';
 import { useAuthStore } from '../stores/authStore';
-import { api } from '../services/api';
+import { useMeetingStore } from '../stores/meetingStore';
 import { MeetingService } from '../services/meeting';
+import { api } from '../services/api';
 import Button from '../components/ui/Button';
+import Input from '../components/ui/Input';
 import { 
   Mic, MicOff, Video as VideoIcon, VideoOff, 
-  MonitorUp, MessageCircle, UserPlus, X, Phone,
-  AlertCircle
+  MonitorUp, MessageCircle, PhoneOff, X,
+  AlertCircle, Loader2
 } from 'lucide-react';
 
-interface MeetingData {
-  id: string;
-  title: string;
-  createdBy: string;
-  isPrivate: boolean;
-}
-
-const Meeting = () => {
+export default function Meeting() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user } = useAuthStore();
-  const { 
-    isAudioEnabled, 
-    isVideoEnabled, 
-    isScreenSharing,
-    isChatOpen,
-    messages,
-    error,
-    toggleAudio: toggleAudioState,
-    toggleVideo: toggleVideoState,
-    toggleScreenSharing: toggleScreenSharingState,
-    toggleChat,
-    addMessage,
-    setError,
-    clearError
-  } = useMeetingStore();
-  
-  const [meeting, setMeeting] = useState<MeetingData | null>(null);
+  const { user, isAuthenticated } = useAuthStore();
+  const { setError, clearError } = useMeetingStore();
   const [isLoading, setIsLoading] = useState(true);
   const [showAccessDenied, setShowAccessDenied] = useState(false);
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [chatMessage, setChatMessage] = useState('');
-  
-  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const [participants, setParticipants] = useState<any[]>([]);
+  const [isAudioEnabled, setIsAudioEnabled] = useState(true);
+  const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [message, setMessage] = useState('');
+  const [messages, setMessages] = useState<Array<{ sender: string; text: string }>>([]);
   const meetingServiceRef = useRef<MeetingService | null>(null);
-  
-  // Check authentication and meeting access
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideosRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const checkAuth = async () => {
-      if (!user) {
+      if (!isAuthenticated) {
         setShowAccessDenied(true);
         setError('Please log in to join the meeting');
-        setIsLoading(false);
         return;
       }
 
       try {
         const response = await api.getMeeting(id || '');
-        
-        if (response.error) {
-          setError(response.error);
+        if (!response.success) {
           setShowAccessDenied(true);
+          setError(response.error || 'Failed to fetch meeting details');
           return;
         }
-        
-        if (response.data) {
-          // Check if user has access to the meeting
-          if (response.data.isPrivate && response.data.createdBy !== user.id) {
-            setError('You do not have access to this meeting');
-            setShowAccessDenied(true);
-            return;
-          }
-          
-          setMeeting(response.data);
+
+        const meeting = response.data;
+        if (meeting?.isPrivate && meeting?.createdBy !== user?.id) {
+          setShowAccessDenied(true);
+          setError('You do not have access to this meeting');
+          return;
         }
-      } catch (err) {
-        console.error('Error checking meeting access:', err);
-        setError('Failed to verify meeting access');
-        setShowAccessDenied(true);
-      } finally {
+
+        // Initialize meeting service
+        meetingServiceRef.current = new MeetingService();
+        meetingServiceRef.current.setOnParticipantsUpdate(setParticipants);
+        meetingServiceRef.current.setOnError((error) => {
+          setError(error);
+          // Show error toast
+          const toast = document.createElement('div');
+          toast.className = 'fixed top-4 right-4 bg-red-500 text-white px-4 py-2 rounded-md';
+          toast.textContent = error;
+          document.body.appendChild(toast);
+          setTimeout(() => toast.remove(), 5000);
+        });
+
+        await meetingServiceRef.current.initializeMeeting(id || '', user?.id || '');
         setIsLoading(false);
+      } catch (error) {
+        console.error('Error initializing meeting:', error);
+        setShowAccessDenied(true);
+        setError('Failed to join meeting. Please try again.');
       }
     };
 
     checkAuth();
-  }, [id, user, setError]);
-  
-  // Initialize WebRTC when meeting data is loaded
-  useEffect(() => {
-    if (!meeting || !user) return;
-    
-    const setupMeeting = async () => {
-      try {
-        // Initialize meeting service
-        meetingServiceRef.current = new MeetingService();
-        const success = await meetingServiceRef.current.initializeMeeting(meeting.id);
-        
-        if (!success) {
-          setError('Failed to initialize meeting connection');
-          return;
-        }
-        
-        // Get local stream
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 },
-            facingMode: 'user',
-          },
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-        
-        setLocalStream(stream);
-        
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-        
-      } catch (err) {
-        console.error('Error accessing media devices:', err);
-        setError('Could not access camera or microphone. Please check your permissions.');
-      }
-    };
-    
-    setupMeeting();
-    
-    // Cleanup function
+
     return () => {
-      if (meetingServiceRef.current) {
-        meetingServiceRef.current.cleanup();
-      }
-      
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-      }
+      meetingServiceRef.current?.leaveMeeting();
     };
-  }, [meeting, user, setError]);
-  
+  }, [id, user, isAuthenticated]);
+
   const handleToggleAudio = async () => {
-    try {
-      if (!meetingServiceRef.current) return;
-      
-      const success = meetingServiceRef.current.toggleAudio();
-      if (!success) {
-        setError('Failed to toggle audio');
-        return;
-      }
-      
-      toggleAudioState();
-    } catch (err) {
-      console.error('Error toggling audio:', err);
-      setError('Failed to toggle audio');
-    }
+    if (!meetingServiceRef.current) return;
+    await meetingServiceRef.current.toggleAudio(!isAudioEnabled);
+    setIsAudioEnabled(!isAudioEnabled);
   };
-  
+
   const handleToggleVideo = async () => {
-    try {
-      if (!meetingServiceRef.current) return;
-      
-      const success = meetingServiceRef.current.toggleVideo();
-      if (!success) {
-        setError('Failed to toggle video');
-        return;
-      }
-      
-      toggleVideoState();
-    } catch (err) {
-      console.error('Error toggling video:', err);
-      setError('Failed to toggle video');
-    }
+    if (!meetingServiceRef.current) return;
+    await meetingServiceRef.current.toggleVideo(!isVideoEnabled);
+    setIsVideoEnabled(!isVideoEnabled);
   };
-  
-  const handleToggleScreenSharing = async () => {
-    try {
-      if (!meetingServiceRef.current) return;
-      
-      const success = await meetingServiceRef.current.toggleScreenShare();
-      if (!success) {
-        setError('Failed to toggle screen sharing');
-        return;
-      }
-      
-      toggleScreenSharingState();
-    } catch (err) {
-      console.error('Error sharing screen:', err);
-      setError('Failed to share screen');
-    }
+
+  const handleToggleScreenShare = async () => {
+    if (!meetingServiceRef.current) return;
+    await meetingServiceRef.current.toggleScreenShare(!isScreenSharing);
+    setIsScreenSharing(!isScreenSharing);
   };
-  
-  const handleLeaveCall = () => {
-    if (meetingServiceRef.current) {
-      meetingServiceRef.current.cleanup();
-    }
-    
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-    }
-    
+
+  const handleSendMessage = () => {
+    if (!message.trim()) return;
+    setMessages([...messages, { sender: user?.name || 'You', text: message }]);
+    setMessage('');
+  };
+
+  const handleLeaveMeeting = () => {
+    meetingServiceRef.current?.leaveMeeting();
     navigate('/dashboard');
   };
-  
-  const handleSendMessage = (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!chatMessage.trim() || !user) return;
-    
-    addMessage(user.name, chatMessage);
-    setChatMessage('');
-  };
-  
-  const copyMeetingLink = () => {
-    const url = window.location.href;
-    navigator.clipboard.writeText(url);
-    // Show a notification
-    alert('Meeting link copied to clipboard!');
-  };
-  
-  if (isLoading) {
+
+  if (showAccessDenied) {
     return (
-      <div className="flex justify-center items-center h-screen">
-        <div className="animate-spin h-12 w-12 border-4 border-blue-500 rounded-full border-t-transparent"></div>
-      </div>
-    );
-  }
-  
-  if (error || showAccessDenied) {
-    return (
-      <div className="container mx-auto px-4 py-12 text-center">
-        <div className="bg-red-50 text-red-800 p-6 rounded-lg inline-block">
-          <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
-          <p>{error || 'You do not have permission to access this meeting'}</p>
-          <div className="mt-4 space-x-4">
-            <Button onClick={() => navigate('/login')}>
-              Login
-            </Button>
+      <div className="flex flex-col items-center justify-center min-h-screen p-4">
+        <div className="w-full max-w-md p-6 bg-white rounded-lg shadow-lg">
+          <h1 className="text-2xl font-bold text-center mb-4">Access Denied</h1>
+          <p className="text-center text-gray-600 mb-6">
+            {useMeetingStore.getState().error || 'You do not have access to this meeting'}
+          </p>
+          <div className="flex justify-center gap-4">
+            <Button onClick={() => navigate('/login')}>Login</Button>
             <Button variant="outline" onClick={() => navigate('/dashboard')}>
               Back to Dashboard
             </Button>
@@ -249,152 +129,116 @@ const Meeting = () => {
       </div>
     );
   }
-  
-  return (
-    <div className="flex flex-col h-screen bg-gray-900">
-      {/* Meeting header */}
-      <div className="bg-gray-800 text-white px-4 py-3 flex justify-between items-center">
-        <div>
-          <h1 className="font-semibold">{meeting?.title || 'Meeting'}</h1>
-          <p className="text-sm text-gray-400">Meeting ID: {id}</p>
-          {meeting?.isPrivate && (
-            <span className="text-xs bg-blue-500 text-white px-2 py-1 rounded-full ml-2">
-              Private
-            </span>
-          )}
-        </div>
-        <Button 
-          variant="outline" 
-          size="sm"
-          className="text-white border-gray-600 hover:bg-gray-700"
-          leftIcon={<UserPlus className="w-4 h-4" />}
-          onClick={copyMeetingLink}
-        >
-          Invite
-        </Button>
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Loader2 className="h-8 w-8 animate-spin" />
       </div>
-      
-      {/* Meeting content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Main video area */}
-        <div className="flex-1 bg-black relative">
-          <video
-            ref={localVideoRef}
-            autoPlay
-            muted
-            playsInline
-            className="w-full h-full object-cover"
-          />
-          
-          {/* Participant label */}
-          <div className="absolute bottom-4 left-4 bg-gray-800 bg-opacity-75 text-white px-3 py-1 rounded-md">
-            {user?.name || 'You'} (You)
-          </div>
-        </div>
-        
-        {/* Chat sidebar */}
-        {isChatOpen && (
-          <div className="w-80 bg-gray-800 border-l border-gray-700 flex flex-col">
-            <div className="p-3 border-b border-gray-700 flex justify-between items-center">
-              <h2 className="text-white font-medium">Chat</h2>
-              <button 
-                className="text-gray-400 hover:text-white"
-                onClick={toggleChat}
-              >
-                <X className="w-5 h-5" />
-              </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-screen bg-gray-100">
+      {/* Main content */}
+      <div className="flex-1 flex">
+        {/* Video grid */}
+        <div className="flex-1 p-4">
+          <div className="grid grid-cols-2 gap-4 h-full">
+            {/* Local video */}
+            <div className="relative bg-black rounded-lg overflow-hidden">
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className="w-full h-full object-cover"
+              />
+              <div className="absolute bottom-4 left-4 flex items-center gap-2">
+                <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center text-white">
+                  {user?.name?.[0]?.toUpperCase()}
+                </div>
+                <span className="text-white">{user?.name} (You)</span>
+              </div>
             </div>
-            
-            <div className="flex-1 overflow-y-auto p-3 space-y-4">
-              {messages.map((message, index) => (
-                <div key={index} className="text-white">
-                  <p className="text-sm text-gray-400">{message.sender}</p>
-                  <p className="bg-gray-700 p-2 rounded-md mt-1">{message.content}</p>
+
+            {/* Remote videos */}
+            <div ref={remoteVideosRef} className="grid grid-cols-2 gap-4">
+              {participants.map((participant) => (
+                <div key={participant.id} className="relative bg-black rounded-lg overflow-hidden">
+                  <video
+                    autoPlay
+                    playsInline
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute bottom-4 left-4 flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center text-white">
+                      {participant.name?.[0]?.toUpperCase()}
+                    </div>
+                    <span className="text-white">{participant.name}</span>
+                  </div>
                 </div>
               ))}
             </div>
-            
-            <form onSubmit={handleSendMessage} className="p-3 border-t border-gray-700">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={chatMessage}
-                  onChange={(e) => setChatMessage(e.target.value)}
-                  placeholder="Type a message..."
-                  className="flex-1 bg-gray-700 text-white px-3 py-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <Button type="submit" size="sm">
-                  Send
-                </Button>
-              </div>
-            </form>
+          </div>
+        </div>
+
+        {/* Chat sidebar */}
+        {isChatOpen && (
+          <div className="w-80 border-l bg-white p-4 flex flex-col">
+            <div className="flex-1 overflow-y-auto mb-4">
+              {messages.map((msg, index) => (
+                <div key={index} className="mb-2">
+                  <span className="font-semibold">{msg.sender}: </span>
+                  <span>{msg.text}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <Input
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder="Type a message..."
+                onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+              />
+              <Button onClick={handleSendMessage}>Send</Button>
+            </div>
           </div>
         )}
       </div>
-      
-      {/* Error notification */}
-      {error && (
-        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-red-500 text-white px-4 py-2 rounded-md flex items-center gap-2">
-          <AlertCircle className="w-5 h-5" />
-          <span>{error}</span>
-          <button 
-            className="ml-2 hover:text-gray-200"
-            onClick={() => clearError()}
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-      
+
       {/* Control bar */}
-      <div className="bg-gray-800 px-4 py-3 flex justify-center items-center gap-4">
-        <Button
-          variant="outline"
-          size="sm"
-          className={`rounded-full ${!isAudioEnabled ? 'bg-red-500 text-white' : 'text-white'}`}
-          onClick={handleToggleAudio}
-        >
-          {!isAudioEnabled ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-        </Button>
-        
-        <Button
-          variant="outline"
-          size="sm"
-          className={`rounded-full ${!isVideoEnabled ? 'bg-red-500 text-white' : 'text-white'}`}
-          onClick={handleToggleVideo}
-        >
-          {!isVideoEnabled ? <VideoOff className="w-5 h-5" /> : <VideoIcon className="w-5 h-5" />}
-        </Button>
-        
-        <Button
-          variant="outline"
-          size="sm"
-          className={`rounded-full ${isScreenSharing ? 'bg-blue-500 text-white' : 'text-white'}`}
-          onClick={handleToggleScreenSharing}
-        >
-          <MonitorUp className="w-5 h-5" />
-        </Button>
-        
-        <Button
-          variant="outline"
-          size="sm"
-          className="rounded-full text-white"
-          onClick={toggleChat}
-        >
-          <MessageCircle className="w-5 h-5" />
-        </Button>
-        
-        <Button
-          variant="danger"
-          size="sm"
-          className="rounded-full"
-          onClick={handleLeaveCall}
-        >
-          <Phone className="w-5 h-5" />
-        </Button>
+      <div className="bg-white border-t p-4">
+        <div className="flex justify-center items-center gap-4">
+          <Button
+            variant={isAudioEnabled ? 'primary' : 'danger'}
+            onClick={handleToggleAudio}
+          >
+            {isAudioEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+          </Button>
+          <Button
+            variant={isVideoEnabled ? 'primary' : 'danger'}
+            onClick={handleToggleVideo}
+          >
+            {isVideoEnabled ? <VideoIcon className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+          </Button>
+          <Button
+            variant={isScreenSharing ? 'primary' : 'outline'}
+            onClick={handleToggleScreenShare}
+          >
+            <MonitorUp className="h-5 w-5" />
+          </Button>
+          <Button
+            variant={isChatOpen ? 'primary' : 'outline'}
+            onClick={() => setIsChatOpen(!isChatOpen)}
+          >
+            <MessageCircle className="h-5 w-5" />
+          </Button>
+          <Button variant="danger" onClick={handleLeaveMeeting}>
+            <PhoneOff className="h-5 w-5" />
+          </Button>
+        </div>
       </div>
     </div>
   );
-};
-
-export default Meeting;
+}

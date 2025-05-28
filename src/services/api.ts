@@ -1,29 +1,41 @@
+import { useAuthStore } from '../stores/authStore';
+
 const API_URL = import.meta.env.VITE_API_URL || 'https://google-meet-clone-ma9v.onrender.com/api';
 const FRONTEND_URL = 'https://famous-sprite-14c531.netlify.app';
 
 export interface ApiResponse<T> {
   success: boolean;
-  data: T | null;
-  message?: string;
+  data?: T;
   error?: string;
 }
 
-interface AuthResponse {
+export interface AuthResponse {
+  token: string;
   user: {
     id: string;
     name: string;
     email: string;
   };
-  token: string;
 }
 
-interface MeetingResponse {
+export interface Meeting {
   id: string;
   title: string;
   createdBy: string;
-  scheduledFor?: string;
-  createdAt: string;
   isPrivate: boolean;
+  createdAt: string;
+}
+
+export interface Participant {
+  id: string;
+  meetingId: string;
+  userId: string;
+  peerId: string;
+  isHost: boolean;
+  isAudioEnabled: boolean;
+  isVideoEnabled: boolean;
+  isScreenSharing: boolean;
+  lastActive: string;
 }
 
 // Retry configuration
@@ -44,6 +56,7 @@ async function checkServerHealth(): Promise<boolean> {
       },
       mode: 'cors',
       credentials: 'include',
+      signal: AbortSignal.timeout(5000), // 5 second timeout
     });
     return response.ok;
   } catch (error) {
@@ -64,7 +77,6 @@ async function handleResponse<T>(response: Response, retryCount = 0): Promise<Ap
       }
       return {
         success: false,
-        data: null,
         error: 'Invalid response format: Expected JSON'
       };
     }
@@ -76,7 +88,6 @@ async function handleResponse<T>(response: Response, retryCount = 0): Promise<Ap
       if (!text) {
         return {
           success: false,
-          data: null,
           error: 'Empty response received'
         };
       }
@@ -89,7 +100,6 @@ async function handleResponse<T>(response: Response, retryCount = 0): Promise<Ap
       }
       return {
         success: false,
-        data: null,
         error: 'Failed to parse server response'
       };
     }
@@ -98,7 +108,6 @@ async function handleResponse<T>(response: Response, retryCount = 0): Promise<Ap
     if (!response.ok) {
       return {
         success: false,
-        data: null,
         error: data.error || data.message || 'An error occurred'
       };
     }
@@ -106,8 +115,7 @@ async function handleResponse<T>(response: Response, retryCount = 0): Promise<Ap
     // Return successful response
     return {
       success: true,
-      data: data.data,
-      message: data.message
+      data,
     };
   } catch (error) {
     // If any error occurs and we haven't exceeded retry limit, try again
@@ -117,7 +125,6 @@ async function handleResponse<T>(response: Response, retryCount = 0): Promise<Ap
     }
     return {
       success: false,
-      data: null,
       error: error instanceof Error ? error.message : 'Unknown error occurred'
     };
   }
@@ -164,7 +171,6 @@ async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<A
     if (!isHealthy) {
       return {
         success: false,
-        data: null,
         error: 'Server is not responding. Please try again later.'
       };
     }
@@ -180,117 +186,79 @@ async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<A
     console.error('API Error:', error);
     return { 
       success: false,
-      data: null, 
       error: error instanceof Error ? error.message : 'Unknown error occurred' 
     };
   }
 }
 
-async function fetchWithAuth<T>(url: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
-  try {
-    // Check server health first
-    const isHealthy = await checkServerHealth();
-    if (!isHealthy) {
-      return {
-        success: false,
-        data: null,
-        error: 'Server is not responding. Please try again later.'
-      };
-    }
-
-    const authStorage = localStorage.getItem('auth-storage');
-    if (!authStorage) {
-      return { 
-        success: false, 
-        data: null, 
-        error: 'No authentication found' 
-      };
-    }
-
-    const { state } = JSON.parse(authStorage);
-    const token = state?.token;
-    
-    if (!token) {
-      return { 
-        success: false, 
-        data: null, 
-        error: 'No token found' 
-      };
-    }
-    
-    const response = await fetchWithTimeout(`${API_URL}${url}`, {
-      ...options,
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Origin': FRONTEND_URL,
-        ...options.headers,
-      },
-      mode: 'cors',
-      credentials: 'include',
-    });
-    
-    if (response.status === 401) {
-      // Clear auth state and redirect to login
-      const authStore = JSON.parse(localStorage.getItem('auth-storage') || '{}');
-      if (authStore.state) {
-        authStore.state.user = null;
-        authStore.state.token = null;
-        authStore.state.isAuthenticated = false;
-        localStorage.setItem('auth-storage', JSON.stringify(authStore));
-      }
-      window.location.href = '/login';
-      return {
-        success: false,
-        data: null,
-        error: 'Session expired. Please login again.'
-      };
-    }
-    
-    return handleResponse<T>(response);
-  } catch (error) {
-    console.error('API Error:', error);
-    return { 
+async function fetchWithAuth<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<ApiResponse<T>> {
+  const token = localStorage.getItem('auth-token');
+  if (!token) {
+    return {
       success: false,
-      data: null, 
-      error: error instanceof Error ? error.message : 'Unknown error occurred' 
+      error: 'Authentication token not found',
     };
   }
+
+  const response = await fetch(`${API_URL}${endpoint}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      ...options.headers,
+    },
+  });
+
+  return handleResponse<T>(response);
 }
 
 export const api = {
   // Auth endpoints
-  login: async (email: string, password: string) => {
-    return fetchPublic<AuthResponse>('/auth/login', {
+  async login(email: string, password: string): Promise<ApiResponse<AuthResponse>> {
+    const response = await fetch(`${API_URL}/auth/login`, {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({ email, password }),
     });
+
+    return handleResponse<AuthResponse>(response);
   },
   
-  register: async (name: string, email: string, password: string) => {
-    return fetchPublic<AuthResponse>('/auth/register', {
+  async register(name: string, email: string, password: string): Promise<ApiResponse<AuthResponse>> {
+    const response = await fetch(`${API_URL}/auth/register`, {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({ name, email, password }),
     });
+
+    return handleResponse<AuthResponse>(response);
   },
   
   // Meeting endpoints
-  createMeeting: async (title: string, scheduledFor?: string, isPrivate: boolean = false) => {
-    return fetchWithAuth<{id: string}>('/meetings', {
+  async createMeeting(title: string, isPrivate: boolean): Promise<ApiResponse<Meeting>> {
+    return fetchWithAuth<Meeting>('/meetings', {
       method: 'POST',
-      body: JSON.stringify({ title, scheduledFor, isPrivate }),
+      body: JSON.stringify({ title, isPrivate }),
     });
   },
   
-  getMeeting: async (id: string) => {
-    return fetchWithAuth<MeetingResponse>(`/meetings/${id}`);
+  async getMeeting(id: string): Promise<ApiResponse<Meeting>> {
+    return fetchWithAuth<Meeting>(`/meetings/${id}`);
   },
   
-  getMeetings: async () => {
-    return fetchWithAuth<MeetingResponse[]>('/meetings');
+  async getMeetings(): Promise<ApiResponse<Meeting[]>> {
+    return fetchWithAuth<Meeting[]>('/meetings');
   },
 
   // Meeting participant endpoints
-  notifyJoin: async (meetingId: string, peerId: string) => {
+  async notifyJoin(meetingId: string, peerId: string): Promise<ApiResponse<void>> {
     return fetchWithAuth<void>(`/meetings/${meetingId}/join`, {
       method: 'POST',
       body: JSON.stringify({ peerId }),
@@ -298,7 +266,31 @@ export const api = {
   },
   
   // User endpoints
-  getProfile: async () => {
-    return fetchWithAuth('/users/profile');
+  async getProfile(): Promise<ApiResponse<AuthResponse['user']>> {
+    return fetchWithAuth<AuthResponse['user']>('/auth/profile');
+  },
+
+  async getParticipants(meetingId: string): Promise<ApiResponse<Participant[]>> {
+    return fetchWithAuth<Participant[]>(`/meetings/${meetingId}/participants`);
+  },
+
+  async updateParticipant(
+    meetingId: string,
+    updates: Partial<Participant>
+  ): Promise<ApiResponse<void>> {
+    return fetchWithAuth<void>(`/meetings/${meetingId}/participants`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+  },
+
+  async sendIceCandidate(
+    meetingId: string,
+    candidate: RTCIceCandidateInit
+  ): Promise<ApiResponse<void>> {
+    return fetchWithAuth<void>(`/meetings/${meetingId}/ice-candidate`, {
+      method: 'POST',
+      body: JSON.stringify({ candidate }),
+    });
   },
 };

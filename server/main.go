@@ -55,6 +55,18 @@ type Meeting struct {
 	IsPrivate   bool      `json:"isPrivate" bson:"isPrivate"`
 }
 
+type Participant struct {
+	ID         string    `json:"id" bson:"_id"`
+	MeetingID  string    `json:"meetingId" bson:"meetingId"`
+	UserID     string    `json:"userId" bson:"userId"`
+	PeerID     string    `json:"peerId" bson:"peerId"`
+	IsHost     bool      `json:"isHost" bson:"isHost"`
+	IsAudioEnabled bool  `json:"isAudioEnabled" bson:"isAudioEnabled"`
+	IsVideoEnabled bool  `json:"isVideoEnabled" bson:"isVideoEnabled"`
+	IsScreenSharing bool `json:"isScreenSharing" bson:"isScreenSharing"`
+	LastActive time.Time `json:"lastActive" bson:"lastActive"`
+}
+
 type Response struct {
 	Success bool        `json:"success"`
 	Data    interface{} `json:"data,omitempty"`
@@ -474,11 +486,185 @@ func notifyJoinHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log the join event
-	log.Printf("User %s joined meeting %s with peer ID %s", userID, meetingID, req.PeerID)
+	// Check if participant already exists
+	var existingParticipant Participant
+	err = db.Participants.FindOne(context.Background(), bson.M{
+		"meetingId": meetingID,
+		"userId":    userID,
+	}).Decode(&existingParticipant)
+
+	if err == nil {
+		// Update existing participant
+		_, err = db.Participants.UpdateOne(
+			context.Background(),
+			bson.M{"_id": existingParticipant.ID},
+			bson.M{
+				"$set": bson.M{
+					"peerId":      req.PeerID,
+					"lastActive":  time.Now(),
+					"isAudioEnabled": true,
+					"isVideoEnabled": true,
+					"isScreenSharing": false,
+				},
+			},
+		)
+	} else if err == mongo.ErrNoDocuments {
+		// Create new participant
+		participant := Participant{
+			ID:            uuid.New().String(),
+			MeetingID:     meetingID,
+			UserID:        userID,
+			PeerID:        req.PeerID,
+			IsHost:        meeting.CreatedBy == userID,
+			IsAudioEnabled: true,
+			IsVideoEnabled: true,
+			IsScreenSharing: false,
+			LastActive:    time.Now(),
+		}
+		_, err = db.Participants.InsertOne(context.Background(), participant)
+	}
+
+	if err != nil {
+		log.Printf("Error updating participant: %v", err)
+		sendErrorResponse(w, "Error joining meeting", http.StatusInternalServerError)
+		return
+	}
+
+	// Get all participants for the meeting
+	cursor, err := db.Participants.Find(context.Background(), bson.M{
+		"meetingId": meetingID,
+		"lastActive": bson.M{
+			"$gte": time.Now().Add(-5 * time.Minute), // Only active in last 5 minutes
+		},
+	})
+	if err != nil {
+		log.Printf("Error fetching participants: %v", err)
+		sendErrorResponse(w, "Error fetching participants", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var participants []Participant
+	if err = cursor.All(context.Background(), &participants); err != nil {
+		log.Printf("Error processing participants: %v", err)
+		sendErrorResponse(w, "Error processing participants", http.StatusInternalServerError)
+		return
+	}
+
+	sendSuccessResponse(w, map[string]interface{}{
+		"message": "Successfully joined meeting",
+		"participants": participants,
+	})
+}
+
+func getParticipantsHandler(w http.ResponseWriter, r *http.Request) {
+	userID := getUserIDFromToken(r)
+	if userID == "" {
+		sendErrorResponse(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	vars := mux.Vars(r)
+	meetingID := vars["id"]
+
+	// Verify meeting exists and user has access
+	var meeting Meeting
+	err := db.Meetings.FindOne(context.Background(), bson.M{"_id": meetingID}).Decode(&meeting)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			sendErrorResponse(w, "Meeting not found", http.StatusNotFound)
+		} else {
+			log.Printf("Database error fetching meeting: %v", err)
+			sendErrorResponse(w, "Database error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if meeting.IsPrivate && meeting.CreatedBy != userID {
+		sendErrorResponse(w, "You do not have access to this meeting", http.StatusForbidden)
+		return
+	}
+
+	cursor, err := db.Participants.Find(context.Background(), bson.M{
+		"meetingId": meetingID,
+		"lastActive": bson.M{
+			"$gte": time.Now().Add(-5 * time.Minute), // Only active in last 5 minutes
+		},
+	})
+	if err != nil {
+		log.Printf("Error fetching participants: %v", err)
+		sendErrorResponse(w, "Error fetching participants", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var participants []Participant
+	if err = cursor.All(context.Background(), &participants); err != nil {
+		log.Printf("Error processing participants: %v", err)
+		sendErrorResponse(w, "Error processing participants", http.StatusInternalServerError)
+		return
+	}
+
+	sendSuccessResponse(w, participants)
+}
+
+func updateParticipantHandler(w http.ResponseWriter, r *http.Request) {
+	userID := getUserIDFromToken(r)
+	if userID == "" {
+		sendErrorResponse(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	vars := mux.Vars(r)
+	meetingID := vars["id"]
+
+	var req struct {
+		IsAudioEnabled    *bool `json:"isAudioEnabled,omitempty"`
+		IsVideoEnabled    *bool `json:"isVideoEnabled,omitempty"`
+		IsScreenSharing   *bool `json:"isScreenSharing,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	update := bson.M{
+		"lastActive": time.Now(),
+	}
+
+	if req.IsAudioEnabled != nil {
+		update["isAudioEnabled"] = *req.IsAudioEnabled
+	}
+	if req.IsVideoEnabled != nil {
+		update["isVideoEnabled"] = *req.IsVideoEnabled
+	}
+	if req.IsScreenSharing != nil {
+		update["isScreenSharing"] = *req.IsScreenSharing
+	}
+
+	result, err := db.Participants.UpdateOne(
+		context.Background(),
+		bson.M{
+			"meetingId": meetingID,
+			"userId":    userID,
+		},
+		bson.M{"$set": update},
+	)
+
+	if err != nil {
+		log.Printf("Error updating participant: %v", err)
+		sendErrorResponse(w, "Error updating participant", http.StatusInternalServerError)
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		sendErrorResponse(w, "Participant not found", http.StatusNotFound)
+		return
+	}
 
 	sendSuccessResponse(w, map[string]string{
-		"message": "Successfully joined meeting",
+		"message": "Successfully updated participant",
 	})
 }
 
@@ -533,6 +719,8 @@ func main() {
 	api.HandleFunc("/meetings", getMeetingsHandler).Methods("GET", "OPTIONS")
 	api.HandleFunc("/meetings/{id}", getMeetingHandler).Methods("GET", "OPTIONS")
 	api.HandleFunc("/meetings/{id}/join", notifyJoinHandler).Methods("POST", "OPTIONS")
+	api.HandleFunc("/meetings/{id}/participants", getParticipantsHandler).Methods("GET", "OPTIONS")
+	api.HandleFunc("/meetings/{id}/participants", updateParticipantHandler).Methods("PUT", "OPTIONS")
 
 	// Health check endpoint
 	api.HandleFunc("/health", healthCheckHandler).Methods("GET", "OPTIONS")

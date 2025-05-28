@@ -16,6 +16,7 @@ var (
 	Database   *mongo.Database
 	Users      *mongo.Collection
 	Meetings   *mongo.Collection
+	Participants *mongo.Collection
 )
 
 // ConnectDB establishes connection to MongoDB with proper configuration
@@ -26,19 +27,21 @@ func ConnectDB() error {
 		mongoURI = "mongodb://localhost:27017" // Default local URI
 	}
 
-	// Configure client options
+	// Configure client options with improved settings
 	clientOptions := options.Client().
 		ApplyURI(mongoURI).
-		SetMaxPoolSize(100).
-		SetMinPoolSize(10).
-		SetMaxConnIdleTime(5 * time.Minute).
-		SetConnectTimeout(10 * time.Second).
-		SetServerSelectionTimeout(5 * time.Second).
+		SetMaxPoolSize(200).                    // Increased pool size
+		SetMinPoolSize(20).                     // Increased min pool size
+		SetMaxConnIdleTime(10 * time.Minute).   // Increased idle time
+		SetConnectTimeout(15 * time.Second).    // Increased connect timeout
+		SetServerSelectionTimeout(10 * time.Second). // Increased server selection timeout
 		SetRetryWrites(true).
-		SetRetryReads(true)
+		SetRetryReads(true).
+		SetHeartbeatInterval(10 * time.Second). // Added heartbeat
+		SetMaxConnecting(50)                    // Limit concurrent connections
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// Connect to MongoDB
@@ -57,6 +60,7 @@ func ConnectDB() error {
 	Database = client.Database("video_meeting_app")
 	Users = Database.Collection("users")
 	Meetings = Database.Collection("meetings")
+	Participants = Database.Collection("participants")
 
 	// Create indexes
 	if err := createIndexes(ctx); err != nil {
@@ -73,6 +77,29 @@ func createIndexes(ctx context.Context) error {
 	_, err := Users.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    map[string]interface{}{"email": 1},
 		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		return err
+	}
+
+	// Create compound index on meeting and participant for faster lookups
+	_, err = Participants.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: map[string]interface{}{
+			"meetingId": 1,
+			"userId":    1,
+		},
+		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		return err
+	}
+
+	// Create TTL index for participants to auto-remove after 24 hours
+	_, err = Participants.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: map[string]interface{}{
+			"lastActive": 1,
+		},
+		Options: options.Index().SetExpireAfterSeconds(86400), // 24 hours
 	})
 	if err != nil {
 		return err
