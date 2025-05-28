@@ -1,22 +1,33 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
 import { api } from '../services/api';
+import { useAuthStore } from '../stores/authStore';
 import Button from '../components/ui/Button';
-import { Plus, Calendar, Video, Clock } from 'lucide-react';
+import { Plus, Calendar, Video, Clock, Lock } from 'lucide-react';
 
 interface Meeting {
   id: string;
   title: string;
-  scheduledFor: string;
+  createdBy: string;
+  scheduledFor?: string;
+  createdAt: string;
+  isPrivate: boolean;
 }
 
 const Dashboard = () => {
+  const navigate = useNavigate();
+  const { user } = useAuthStore();
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!user) {
+      navigate('/login');
+      return;
+    }
+
     const fetchMeetings = async () => {
       setIsLoading(true);
       try {
@@ -39,11 +50,15 @@ const Dashboard = () => {
     };
 
     fetchMeetings();
-  }, []);
+  }, [user, navigate]);
 
   const formatMeetingDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return format(date, 'EEEE, MMMM d, yyyy h:mm a');
+    try {
+      const date = new Date(dateString);
+      return format(date, 'EEEE, MMMM d, yyyy h:mm a');
+    } catch (err) {
+      return 'Date not set';
+    }
   };
 
   return (
@@ -87,10 +102,18 @@ const Dashboard = () => {
               <li key={meeting.id} className="p-6 hover:bg-gray-50 transition-colors">
                 <div className="flex items-start justify-between">
                   <div>
-                    <h3 className="font-semibold text-lg mb-1">{meeting.title}</h3>
-                    <p className="text-gray-600 flex items-center">
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-lg">{meeting.title}</h3>
+                      {meeting.isPrivate && (
+                        <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full flex items-center gap-1">
+                          <Lock className="w-3 h-3" />
+                          Private
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-gray-600 flex items-center mt-1">
                       <Clock className="w-4 h-4 mr-1" />
-                      {formatMeetingDate(meeting.scheduledFor)}
+                      {meeting.scheduledFor ? formatMeetingDate(meeting.scheduledFor) : 'No date set'}
                     </p>
                   </div>
                   

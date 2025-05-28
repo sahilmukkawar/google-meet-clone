@@ -1,4 +1,4 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api';
+const API_URL = import.meta.env.VITE_API_URL || 'https://bolt-video-server.onrender.com/api';
 
 export interface ApiResponse<T> {
   success: boolean;
@@ -22,6 +22,7 @@ interface MeetingResponse {
   createdBy: string;
   scheduledFor?: string;
   createdAt: string;
+  isPrivate: boolean;
 }
 
 async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
@@ -52,6 +53,7 @@ async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<A
       message: data.message 
     };
   } catch (error) {
+    console.error('API Error:', error);
     return { 
       success: false,
       data: null, 
@@ -114,6 +116,7 @@ async function fetchWithAuth<T>(url: string, options: RequestInit = {}): Promise
       message: data.message 
     };
   } catch (error) {
+    console.error('API Error:', error);
     return { 
       success: false,
       data: null, 
@@ -139,10 +142,10 @@ export const api = {
   },
   
   // Meeting endpoints
-  createMeeting: async (title: string, scheduledFor?: string) => {
+  createMeeting: async (title: string, scheduledFor?: string, isPrivate: boolean = false) => {
     return fetchWithAuth<{id: string}>('/meetings', {
       method: 'POST',
-      body: JSON.stringify({ title, scheduledFor }),
+      body: JSON.stringify({ title, scheduledFor, isPrivate }),
     });
   },
   

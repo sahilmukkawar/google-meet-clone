@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: bolt-video-server
+    env: go
+    buildCommand: go build -o bolt-server
+    startCommand: ./bolt-server
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: PORT
+        value: 8080 

@@ -13,11 +13,20 @@ export const initializeMeeting = (meetingId: string) => {
   
   if (!user) return null;
   
+  // Generate a random ID for the peer
+  const peerId = Math.random().toString(36).substring(2, 15);
+  
   // Initialize PeerJS
-  const peer = new Peer(undefined, {
+  const peer = new Peer(peerId, {
     host: import.meta.env.VITE_PEER_HOST || 'localhost',
     port: Number(import.meta.env.VITE_PEER_PORT) || 9000,
     path: '/videochat',
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ],
+    },
   });
   
   // Set meeting ID in store
@@ -45,9 +54,20 @@ export const initializeMeeting = (meetingId: string) => {
       
       // Add remote participant when stream received
       call.on('stream', (remoteStream) => {
-        // In a real implementation, we would handle the stream
-        // and add the participant to the store
-        console.log('Received remote stream', remoteStream);
+        const remoteParticipant = {
+          id: call.peer,
+          name: 'Remote User', // In a real app, you'd get this from a signaling server
+          stream: remoteStream,
+          isAudioEnabled: true,
+          isVideoEnabled: true,
+        };
+        
+        addParticipant(remoteParticipant);
+      });
+      
+      // Handle call close
+      call.on('close', () => {
+        removeParticipant(call.peer);
       });
     }).catch(err => {
       console.error('Failed to get local stream', err);
@@ -80,8 +100,20 @@ export const joinMeeting = (peer: Peer, participantIds: string[]) => {
       
       // Handle stream from the remote participant
       call.on('stream', (remoteStream) => {
-        // In a real implementation, we would handle the stream
-        console.log('Received remote stream', remoteStream);
+        const remoteParticipant = {
+          id: participantId,
+          name: 'Remote User', // In a real app, you'd get this from a signaling server
+          stream: remoteStream,
+          isAudioEnabled: true,
+          isVideoEnabled: true,
+        };
+        
+        useMeetingStore.getState().addParticipant(remoteParticipant);
+      });
+      
+      // Handle call close
+      call.on('close', () => {
+        useMeetingStore.getState().removeParticipant(participantId);
       });
     });
     
@@ -90,7 +122,10 @@ export const joinMeeting = (peer: Peer, participantIds: string[]) => {
 };
 
 export const leaveCall = (peer: Peer) => {
-  peer.disconnect();
+  if (!peer) return;
+  
+  // Close all connections
+  peer.destroy();
 };
 
 export const toggleAudio = (stream: MediaStream | null) => {

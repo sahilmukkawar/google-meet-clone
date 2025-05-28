@@ -34,6 +34,7 @@ type Meeting struct {
 	CreatedBy   string    `json:"createdBy" bson:"createdBy"`
 	ScheduledFor string    `json:"scheduledFor,omitempty" bson:"scheduledFor,omitempty"`
 	CreatedAt   time.Time `json:"createdAt" bson:"createdAt"`
+	IsPrivate   bool      `json:"isPrivate" bson:"isPrivate"`
 }
 
 // Response wrapper for API responses
@@ -76,7 +77,7 @@ func main() {
 	// Apply CORS middleware to router
 	handler := c.Handler(r)
 	
-	// Determine port
+	// Determine port (Render will provide PORT environment variable)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -118,6 +119,7 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		sendErrorResponse(w, "Email already in use", http.StatusBadRequest)
 		return
 	} else if err != mongo.ErrNoDocuments {
+		log.Printf("Database error during email check: %v", err)
 		sendErrorResponse(w, "Database error", http.StatusInternalServerError)
 		return
 	}
@@ -125,6 +127,7 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
+		log.Printf("Error hashing password: %v", err)
 		sendErrorResponse(w, "Error processing password", http.StatusInternalServerError)
 		return
 	}
@@ -141,6 +144,7 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 	// Insert user into database
 	_, err = db.Users.InsertOne(context.Background(), user)
 	if err != nil {
+		log.Printf("Error creating user: %v", err)
 		sendErrorResponse(w, "Error creating user", http.StatusInternalServerError)
 		return
 	}
@@ -186,6 +190,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		if err == mongo.ErrNoDocuments {
 			sendErrorResponse(w, "Invalid email or password", http.StatusUnauthorized)
 		} else {
+			log.Printf("Database error during login: %v", err)
 			sendErrorResponse(w, "Database error", http.StatusInternalServerError)
 		}
 		return
@@ -228,6 +233,7 @@ func createMeetingHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Title       string `json:"title"`
 		ScheduledFor string `json:"scheduledFor,omitempty"`
+		IsPrivate   bool   `json:"isPrivate"`
 	}
 	
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -247,10 +253,12 @@ func createMeetingHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedBy:   userID,
 		ScheduledFor: req.ScheduledFor,
 		CreatedAt:   time.Now(),
+		IsPrivate:   req.IsPrivate,
 	}
 	
 	_, err := db.Meetings.InsertOne(context.Background(), meeting)
 	if err != nil {
+		log.Printf("Error creating meeting: %v", err)
 		sendErrorResponse(w, "Error creating meeting", http.StatusInternalServerError)
 		return
 	}
@@ -274,6 +282,7 @@ func getMeetingsHandler(w http.ResponseWriter, r *http.Request) {
 	
 	cursor, err := db.Meetings.Find(context.Background(), bson.M{"createdBy": userID})
 	if err != nil {
+		log.Printf("Error fetching meetings: %v", err)
 		sendErrorResponse(w, "Error fetching meetings", http.StatusInternalServerError)
 		return
 	}
@@ -281,6 +290,7 @@ func getMeetingsHandler(w http.ResponseWriter, r *http.Request) {
 	
 	var meetings []Meeting
 	if err = cursor.All(context.Background(), &meetings); err != nil {
+		log.Printf("Error processing meetings: %v", err)
 		sendErrorResponse(w, "Error processing meetings", http.StatusInternalServerError)
 		return
 	}
@@ -294,6 +304,12 @@ func getMeetingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
+	userID := getUserIDFromToken(r)
+	if userID == "" {
+		sendErrorResponse(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	
 	vars := mux.Vars(r)
 	meetingID := vars["id"]
 	
@@ -303,8 +319,15 @@ func getMeetingHandler(w http.ResponseWriter, r *http.Request) {
 		if err == mongo.ErrNoDocuments {
 			sendErrorResponse(w, "Meeting not found", http.StatusNotFound)
 		} else {
+			log.Printf("Database error fetching meeting: %v", err)
 			sendErrorResponse(w, "Database error", http.StatusInternalServerError)
 		}
+		return
+	}
+	
+	// Check if user has access to the meeting
+	if meeting.IsPrivate && meeting.CreatedBy != userID {
+		sendErrorResponse(w, "You do not have access to this meeting", http.StatusForbidden)
 		return
 	}
 	

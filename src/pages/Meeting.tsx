@@ -14,6 +14,7 @@ interface MeetingData {
   id: string;
   title: string;
   createdBy: string;
+  isPrivate: boolean;
 }
 
 const Meeting = () => {
@@ -38,14 +39,27 @@ const Meeting = () => {
   const [error, setError] = useState<string | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [chatMessage, setChatMessage] = useState('');
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [showAccessDenied, setShowAccessDenied] = useState(false);
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<any>(null);
   
+  // Check authentication and meeting access
+  useEffect(() => {
+    if (!user) {
+      setShowAccessDenied(true);
+      setError('Please log in to join the meeting');
+      setIsLoading(false);
+      return;
+    }
+  }, [user]);
+  
   // Fetch meeting data
   useEffect(() => {
     const fetchMeeting = async () => {
-      if (!id) return;
+      if (!id || !user) return;
       
       try {
         const response = await api.getMeeting(id);
@@ -56,6 +70,12 @@ const Meeting = () => {
         }
         
         if (response.data) {
+          // Check if user has access to the meeting
+          if (response.data.isPrivate && response.data.createdBy !== user.id) {
+            setError('You do not have access to this meeting');
+            return;
+          }
+          
           setMeeting(response.data);
         }
       } catch (err) {
@@ -67,7 +87,7 @@ const Meeting = () => {
     };
     
     fetchMeeting();
-  }, [id]);
+  }, [id, user]);
   
   // Initialize WebRTC when meeting data is loaded
   useEffect(() => {
@@ -94,7 +114,7 @@ const Meeting = () => {
         
       } catch (err) {
         console.error('Error accessing media devices:', err);
-        setError('Could not access camera or microphone');
+        setError('Could not access camera or microphone. Please check your permissions.');
       }
     };
     
@@ -112,42 +132,125 @@ const Meeting = () => {
     };
   }, [meeting, user]);
   
-  const handleToggleAudio = () => {
-    toggleAudioState();
-    toggleAudio(localStream);
+  const handleToggleAudio = async () => {
+    try {
+      if (!localStream) {
+        throw new Error('No local stream available');
+      }
+      
+      const audioTracks = localStream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        throw new Error('No audio tracks available');
+      }
+
+      // Toggle audio state
+      const newMutedState = !isMuted;
+      setIsMuted(newMutedState);
+      toggleAudioState();
+      
+      // Enable/disable all audio tracks
+      audioTracks.forEach(track => {
+        track.enabled = !newMutedState;
+      });
+
+      // Update peer connection if it exists
+      if (peerRef.current) {
+        const senders = peerRef.current.getSenders();
+        const audioSender = senders.find(sender => sender.track?.kind === 'audio');
+        if (audioSender) {
+          audioSender.track.enabled = !newMutedState;
+        }
+      }
+    } catch (err) {
+      console.error('Error toggling audio:', err);
+      setError('Failed to toggle audio');
+      // Revert state on error
+      setIsMuted(!isMuted);
+      toggleAudioState();
+    }
   };
   
-  const handleToggleVideo = () => {
-    toggleVideoState();
-    toggleVideo(localStream);
+  const handleToggleVideo = async () => {
+    try {
+      if (!localStream) {
+        throw new Error('No local stream available');
+      }
+      
+      const videoTracks = localStream.getVideoTracks();
+      if (videoTracks.length === 0) {
+        throw new Error('No video tracks available');
+      }
+
+      // Toggle video state
+      const newVideoState = !isVideoOff;
+      setIsVideoOff(newVideoState);
+      toggleVideoState();
+      
+      // Enable/disable all video tracks
+      videoTracks.forEach(track => {
+        track.enabled = !newVideoState;
+      });
+
+      // Update peer connection if it exists
+      if (peerRef.current) {
+        const senders = peerRef.current.getSenders();
+        const videoSender = senders.find(sender => sender.track?.kind === 'video');
+        if (videoSender) {
+          videoSender.track.enabled = !newVideoState;
+        }
+      }
+
+      // Update video element visibility
+      if (localVideoRef.current) {
+        localVideoRef.current.style.display = newVideoState ? 'none' : 'block';
+      }
+    } catch (err) {
+      console.error('Error toggling video:', err);
+      setError('Failed to toggle video');
+      // Revert state on error
+      setIsVideoOff(!isVideoOff);
+      toggleVideoState();
+    }
   };
   
   const handleToggleScreenSharing = async () => {
-    toggleScreenSharingState();
-    
-    if (!isScreenSharing) {
-      try {
+    try {
+      if (!isScreenSharing) {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
         });
         
-        // Here you would handle replacing the video track
-        // with the screen sharing track in the peer connection
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = screenStream;
+        }
         
-      } catch (err) {
-        console.error('Error sharing screen:', err);
+        // Handle screen sharing stop
+        screenStream.getVideoTracks()[0].onended = () => {
+          if (localStream && localVideoRef.current) {
+            localVideoRef.current.srcObject = localStream;
+          }
+          toggleScreenSharingState();
+        };
+      } else {
+        if (localStream && localVideoRef.current) {
+          localVideoRef.current.srcObject = localStream;
+        }
       }
-    } else {
-      // Revert back to camera
-      if (localStream && localVideoRef.current) {
-        localVideoRef.current.srcObject = localStream;
-      }
+      
+      toggleScreenSharingState();
+    } catch (err) {
+      console.error('Error sharing screen:', err);
+      setError('Failed to share screen');
     }
   };
   
   const handleLeaveCall = () => {
     if (peerRef.current) {
       leaveCall(peerRef.current);
+    }
+    
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
     }
     
     navigate('/dashboard');
@@ -165,7 +268,8 @@ const Meeting = () => {
   const copyMeetingLink = () => {
     const url = window.location.href;
     navigator.clipboard.writeText(url);
-    // You could show a notification here
+    // Show a notification
+    alert('Meeting link copied to clipboard!');
   };
   
   if (isLoading) {
@@ -176,15 +280,20 @@ const Meeting = () => {
     );
   }
   
-  if (error) {
+  if (error || showAccessDenied) {
     return (
       <div className="container mx-auto px-4 py-12 text-center">
         <div className="bg-red-50 text-red-800 p-6 rounded-lg inline-block">
-          <h2 className="text-xl font-semibold mb-2">Error</h2>
-          <p>{error}</p>
-          <Button className="mt-4" onClick={() => navigate('/dashboard')}>
-            Back to Dashboard
-          </Button>
+          <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
+          <p>{error || 'You do not have permission to access this meeting'}</p>
+          <div className="mt-4 space-x-4">
+            <Button onClick={() => navigate('/login')}>
+              Login
+            </Button>
+            <Button variant="outline" onClick={() => navigate('/dashboard')}>
+              Back to Dashboard
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -197,6 +306,11 @@ const Meeting = () => {
         <div>
           <h1 className="font-semibold">{meeting?.title || 'Meeting'}</h1>
           <p className="text-sm text-gray-400">Meeting ID: {id}</p>
+          {meeting?.isPrivate && (
+            <span className="text-xs bg-blue-500 text-white px-2 py-1 rounded-full ml-2">
+              Private
+            </span>
+          )}
         </div>
         <Button 
           variant="outline" 
@@ -241,8 +355,8 @@ const Meeting = () => {
             </div>
             
             <div className="flex-1 overflow-y-auto p-3 space-y-4">
-              {messages.map(message => (
-                <div key={message.id} className="text-white">
+              {messages.map((message, index) => (
+                <div key={index} className="text-white">
                   <p className="text-sm text-gray-400">{message.sender}</p>
                   <p className="bg-gray-700 p-2 rounded-md mt-1">{message.content}</p>
                 </div>
@@ -250,66 +364,68 @@ const Meeting = () => {
             </div>
             
             <form onSubmit={handleSendMessage} className="p-3 border-t border-gray-700">
-              <div className="flex">
+              <div className="flex gap-2">
                 <input
                   type="text"
-                  placeholder="Type a message..."
-                  className="flex-1 bg-gray-700 text-white rounded-l-md px-3 py-2 focus:outline-none"
                   value={chatMessage}
                   onChange={(e) => setChatMessage(e.target.value)}
+                  placeholder="Type a message..."
+                  className="flex-1 bg-gray-700 text-white px-3 py-2 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
-                <button
-                  type="submit"
-                  className="bg-blue-600 text-white px-3 py-2 rounded-r-md hover:bg-blue-700"
-                >
+                <Button type="submit" size="sm">
                   Send
-                </button>
+                </Button>
               </div>
             </form>
           </div>
         )}
       </div>
       
-      {/* Meeting controls */}
-      <div className="bg-gray-800 text-white px-4 py-3 flex justify-center items-center gap-4">
+      {/* Control bar */}
+      <div className="bg-gray-800 px-4 py-3 flex justify-center items-center gap-4">
         <Button
-          variant="ghost"
-          className={`rounded-full p-3 ${isAudioEnabled ? 'text-white hover:bg-gray-700' : 'bg-red-600 text-white hover:bg-red-700'}`}
+          variant="outline"
+          size="sm"
+          className={`rounded-full ${isMuted ? 'bg-red-500 text-white' : 'text-white'}`}
           onClick={handleToggleAudio}
         >
-          {isAudioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+          {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
         </Button>
         
         <Button
-          variant="ghost"
-          className={`rounded-full p-3 ${isVideoEnabled ? 'text-white hover:bg-gray-700' : 'bg-red-600 text-white hover:bg-red-700'}`}
+          variant="outline"
+          size="sm"
+          className={`rounded-full ${isVideoOff ? 'bg-red-500 text-white' : 'text-white'}`}
           onClick={handleToggleVideo}
         >
-          {isVideoEnabled ? <VideoIcon className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
+          {isVideoOff ? <VideoOff className="w-5 h-5" /> : <VideoIcon className="w-5 h-5" />}
         </Button>
         
         <Button
-          variant="ghost"
-          className={`rounded-full p-3 ${isScreenSharing ? 'bg-green-600 text-white hover:bg-green-700' : 'text-white hover:bg-gray-700'}`}
+          variant="outline"
+          size="sm"
+          className={`rounded-full ${isScreenSharing ? 'bg-blue-500 text-white' : 'text-white'}`}
           onClick={handleToggleScreenSharing}
         >
           <MonitorUp className="w-5 h-5" />
         </Button>
         
         <Button
-          variant="ghost"
-          className={`rounded-full p-3 ${isChatOpen ? 'bg-blue-600 text-white hover:bg-blue-700' : 'text-white hover:bg-gray-700'}`}
+          variant="outline"
+          size="sm"
+          className="rounded-full text-white"
           onClick={toggleChat}
         >
           <MessageCircle className="w-5 h-5" />
         </Button>
         
         <Button
-          variant="ghost"
-          className="rounded-full p-3 bg-red-600 text-white hover:bg-red-700"
+          variant="danger"
+          size="sm"
+          className="rounded-full"
           onClick={handleLeaveCall}
         >
-          <Phone className="w-5 h-5 transform rotate-135" />
+          <Phone className="w-5 h-5" />
         </Button>
       </div>
     </div>
