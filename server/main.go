@@ -24,6 +24,7 @@ const (
 	DefaultPort = "8080"
 	MaxRetries  = 3
 	RetryDelay  = 1 * time.Second
+	CookieName  = "session_token"
 )
 
 // Allowed origins for CORS
@@ -57,11 +58,29 @@ type Response struct {
 	Error   string      `json:"error,omitempty"`
 }
 
+// Initialize MongoDB connection with retry logic
+func initMongoDB() error {
+	var err error
+	for i := 0; i < MaxRetries; i++ {
+		err = db.ConnectDB()
+		if err == nil {
+			log.Println("Successfully connected to MongoDB")
+			return nil
+		}
+		log.Printf("Failed to connect to MongoDB (attempt %d/%d): %v", i+1, MaxRetries, err)
+		if i < MaxRetries-1 {
+			time.Sleep(RetryDelay)
+		}
+	}
+	return fmt.Errorf("failed to connect to MongoDB after %d attempts: %v", MaxRetries, err)
+}
+
 // Middleware
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		log.Printf("Started %s %s", r.Method, r.URL.Path)
+		log.Printf("Request headers: %v", r.Header)
 		next.ServeHTTP(w, r)
 		log.Printf("Completed %s %s in %v", r.Method, r.URL.Path, time.Since(start))
 	})
@@ -75,7 +94,8 @@ func jsonMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, Set-Cookie")
+			w.Header().Set("Vary", "Origin")
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		next.ServeHTTP(w, r)
@@ -92,6 +112,32 @@ func isAllowedOrigin(origin string) bool {
 	return false
 }
 
+func setSessionCookie(w http.ResponseWriter, token string) {
+	cookie := &http.Cookie{
+		Name:     CookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteNoneMode,
+		MaxAge:   86400 * 7, // 7 days
+	}
+	http.SetCookie(w, cookie)
+}
+
+func clearSessionCookie(w http.ResponseWriter) {
+	cookie := &http.Cookie{
+		Name:     CookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteNoneMode,
+		MaxAge:   -1,
+	}
+	http.SetCookie(w, cookie)
+}
+
 func sendJSONResponse(w http.ResponseWriter, statusCode int, response Response) {
 	origin := w.Header().Get("Origin")
 	if origin == "" {
@@ -103,7 +149,8 @@ func sendJSONResponse(w http.ResponseWriter, statusCode int, response Response) 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, Set-Cookie")
+		w.Header().Set("Vary", "Origin")
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -142,7 +189,23 @@ func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 
 // Handlers
 func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
-	sendSuccessResponse(w, map[string]string{"status": "ok"})
+	// Check MongoDB connection
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := db.Client.Ping(ctx, nil)
+	if err != nil {
+		log.Printf("MongoDB health check failed: %v", err)
+		sendErrorResponse(w, "Database connection error", http.StatusServiceUnavailable)
+		return
+	}
+
+	sendSuccessResponse(w, map[string]interface{}{
+		"status":    "ok",
+		"database":  "connected",
+		"timestamp": time.Now().Format(time.RFC3339),
+		"version":   "1.0.0",
+	})
 }
 
 func registerHandler(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +267,8 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token := fmt.Sprintf("token_%s", userID)
+	setSessionCookie(w, token)
+
 	sendSuccessResponse(w, map[string]interface{}{
 		"user": map[string]string{
 			"id":    user.ID,
@@ -254,6 +319,8 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token := fmt.Sprintf("token_%s", user.ID)
+	setSessionCookie(w, token)
+
 	sendSuccessResponse(w, map[string]interface{}{
 		"user": map[string]string{
 			"id":    user.ID,
@@ -262,6 +329,16 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		},
 		"token": token,
 	})
+}
+
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	clearSessionCookie(w)
+	sendSuccessResponse(w, map[string]string{"message": "Logged out successfully"})
 }
 
 func createMeetingHandler(w http.ResponseWriter, r *http.Request) {
@@ -395,9 +472,9 @@ func getUserIDFromToken(r *http.Request) string {
 }
 
 func main() {
-	// Connect to MongoDB
-	if err := db.ConnectDB(); err != nil {
-		log.Fatal("Failed to connect to MongoDB:", err)
+	// Initialize MongoDB with retry logic
+	if err := initMongoDB(); err != nil {
+		log.Fatalf("Failed to initialize MongoDB: %v", err)
 	}
 	defer db.CloseDB()
 
@@ -414,6 +491,7 @@ func main() {
 	// Auth routes
 	api.HandleFunc("/auth/register", registerHandler).Methods("POST", "OPTIONS")
 	api.HandleFunc("/auth/login", loginHandler).Methods("POST", "OPTIONS")
+	api.HandleFunc("/auth/logout", logoutHandler).Methods("POST", "OPTIONS")
 
 	// Meeting routes
 	api.HandleFunc("/meetings", createMeetingHandler).Methods("POST", "OPTIONS")
@@ -428,7 +506,7 @@ func main() {
 		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"},
-		ExposedHeaders:   []string{"Content-Type", "Authorization"},
+		ExposedHeaders:   []string{"Content-Type", "Authorization", "Set-Cookie"},
 		AllowCredentials: true,
 		MaxAge:           300,
 		Debug:            true,
@@ -452,7 +530,25 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start server
-	log.Printf("Server starting on port %s", port)
-	log.Fatal(server.ListenAndServe())
+	// Start server with graceful shutdown
+	go func() {
+		log.Printf("Server starting on port %s", port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal
+	quit := make(chan os.Signal, 1)
+	<-quit
+
+	// Graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
+	}
+
+	log.Println("Server exiting")
 }

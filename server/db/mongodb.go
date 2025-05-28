@@ -2,14 +2,13 @@ package db
 
 import (
 	"context"
-	"crypto/tls"
-	"fmt"
 	"log"
+	"os"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
 var (
@@ -19,76 +18,105 @@ var (
 	Meetings   *mongo.Collection
 )
 
+// ConnectDB establishes connection to MongoDB with proper configuration
 func ConnectDB() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Get MongoDB URI from environment variable
+	mongoURI := os.Getenv("MONGODB_URI")
+	if mongoURI == "" {
+		mongoURI = "mongodb://localhost:27017" // Default local URI
+	}
 
-	// MongoDB connection string with explicit SSL/TLS options
-	uri := "mongodb+srv://mukkawarsahil99:e2sqKmvN07qUMfhG@cluster0.bayih5k.mongodb.net/video_meeting_app?retryWrites=true&w=majority&ssl=true&tlsAllowInvalidCertificates=false"
-	
-	// Connect to MongoDB with options
+	// Configure client options
 	clientOptions := options.Client().
-		ApplyURI(uri).
-		SetServerAPIOptions(options.ServerAPI(options.ServerAPIVersion1)).
+		ApplyURI(mongoURI).
 		SetMaxPoolSize(100).
-		SetMinPoolSize(5).
+		SetMinPoolSize(10).
 		SetMaxConnIdleTime(5 * time.Minute).
-		SetTLSConfig(&tls.Config{
-			MinVersion: tls.VersionTLS12,
-		})
+		SetConnectTimeout(10 * time.Second).
+		SetServerSelectionTimeout(5 * time.Second).
+		SetRetryWrites(true).
+		SetRetryReads(true)
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	// Connect to MongoDB
 	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		return fmt.Errorf("failed to connect to MongoDB: %v", err)
+		return err
 	}
 
-	// Ping the database with a longer timeout
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer pingCancel()
-	
-	err = client.Ping(pingCtx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to ping MongoDB: %v", err)
+	// Ping the database to verify connection
+	if err := client.Ping(ctx, readpref.Primary()); err != nil {
+		return err
 	}
 
-	// Set up database and collections
+	// Set global variables
 	Client = client
 	Database = client.Database("video_meeting_app")
 	Users = Database.Collection("users")
 	Meetings = Database.Collection("meetings")
 
 	// Create indexes
-	createIndexes(ctx)
+	if err := createIndexes(ctx); err != nil {
+		log.Printf("Warning: Failed to create indexes: %v", err)
+	}
 
-	log.Println("Connected to MongoDB!")
+	log.Println("Connected to MongoDB successfully")
 	return nil
 }
 
-func createIndexes(ctx context.Context) {
-	// Create unique index on email for users
-	userIndexModel := mongo.IndexModel{
-		Keys:    bson.D{{Key: "email", Value: 1}},
+// createIndexes creates necessary indexes for collections
+func createIndexes(ctx context.Context) error {
+	// Create unique index on email field for users
+	_, err := Users.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    map[string]interface{}{"email": 1},
 		Options: options.Index().SetUnique(true),
-	}
-	_, err := Users.Indexes().CreateOne(ctx, userIndexModel)
+	})
 	if err != nil {
-		log.Printf("Error creating user index: %v", err)
+		return err
 	}
 
-	// Create index on createdBy for meetings
-	meetingIndexModel := mongo.IndexModel{
-		Keys: bson.D{{Key: "createdBy", Value: 1}},
-	}
-	_, err = Meetings.Indexes().CreateOne(ctx, meetingIndexModel)
+	// Create index on createdBy field for meetings
+	_, err = Meetings.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: map[string]interface{}{"createdBy": 1},
+	})
 	if err != nil {
-		log.Printf("Error creating meeting index: %v", err)
+		return err
+	}
+
+	// Create index on scheduledFor field for meetings
+	_, err = Meetings.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: map[string]interface{}{"scheduledFor": 1},
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// CloseDB closes the MongoDB connection
+func CloseDB() {
+	if Client != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := Client.Disconnect(ctx); err != nil {
+			log.Printf("Error disconnecting from MongoDB: %v", err)
+		}
 	}
 }
 
-func CloseDB() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// IsConnected checks if the database connection is alive
+func IsConnected() bool {
+	if Client == nil {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
-	return Client.Disconnect(ctx)
+
+	err := Client.Ping(ctx, nil)
+	return err == nil
 } 
