@@ -1,4 +1,4 @@
-const API_URL = import.meta.env.VITE_API_URL || 'https://bolt-video-server.onrender.com/api';
+const API_URL = import.meta.env.VITE_API_URL || 'https://google-meet-clone-ma9v.onrender.com/api';
 
 export interface ApiResponse<T> {
   success: boolean;
