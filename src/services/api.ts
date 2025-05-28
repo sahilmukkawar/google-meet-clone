@@ -230,7 +230,14 @@ async function fetchWithAuth<T>(url: string, options: RequestInit = {}): Promise
     });
     
     if (response.status === 401) {
-      localStorage.removeItem('auth-storage');
+      // Clear auth state and redirect to login
+      const authStore = JSON.parse(localStorage.getItem('auth-storage') || '{}');
+      if (authStore.state) {
+        authStore.state.user = null;
+        authStore.state.token = null;
+        authStore.state.isAuthenticated = false;
+        localStorage.setItem('auth-storage', JSON.stringify(authStore));
+      }
       window.location.href = '/login';
       return {
         success: false,

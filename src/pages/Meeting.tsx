@@ -49,24 +49,20 @@ const Meeting = () => {
   
   // Check authentication and meeting access
   useEffect(() => {
-    if (!user) {
-      setShowAccessDenied(true);
-      setError('Please log in to join the meeting');
-      setIsLoading(false);
-      return;
-    }
-  }, [user, setError]);
-  
-  // Fetch meeting data
-  useEffect(() => {
-    const fetchMeeting = async () => {
-      if (!id || !user) return;
-      
+    const checkAuth = async () => {
+      if (!user) {
+        setShowAccessDenied(true);
+        setError('Please log in to join the meeting');
+        setIsLoading(false);
+        return;
+      }
+
       try {
-        const response = await api.getMeeting(id);
+        const response = await api.getMeeting(id || '');
         
         if (response.error) {
           setError(response.error);
+          setShowAccessDenied(true);
           return;
         }
         
@@ -74,20 +70,22 @@ const Meeting = () => {
           // Check if user has access to the meeting
           if (response.data.isPrivate && response.data.createdBy !== user.id) {
             setError('You do not have access to this meeting');
+            setShowAccessDenied(true);
             return;
           }
           
           setMeeting(response.data);
         }
       } catch (err) {
-        setError('Failed to load meeting data');
-        console.error(err);
+        console.error('Error checking meeting access:', err);
+        setError('Failed to verify meeting access');
+        setShowAccessDenied(true);
       } finally {
         setIsLoading(false);
       }
     };
-    
-    fetchMeeting();
+
+    checkAuth();
   }, [id, user, setError]);
   
   // Initialize WebRTC when meeting data is loaded
