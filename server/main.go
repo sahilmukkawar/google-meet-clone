@@ -45,6 +45,14 @@ type Response struct {
 	Error   string      `json:"error,omitempty"`
 }
 
+// Middleware to ensure JSON responses
+func jsonMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	// Connect to MongoDB
 	if err := db.ConnectDB(); err != nil {
@@ -54,6 +62,9 @@ func main() {
 
 	// Create router
 	r := mux.NewRouter()
+	
+	// Apply JSON middleware to all routes
+	r.Use(jsonMiddleware)
 	
 	// API routes
 	api := r.PathPrefix("/api").Subrouter()
@@ -71,10 +82,11 @@ func main() {
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization", "Accept"},
-		ExposedHeaders:   []string{"Content-Type"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"},
+		ExposedHeaders:   []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
 		MaxAge:           300,
+		Debug:            true,
 	})
 	
 	// Apply CORS middleware to router
@@ -92,16 +104,28 @@ func main() {
 }
 
 func sendJSONResponse(w http.ResponseWriter, statusCode int, response Response) {
+	// Ensure content type is set
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
 	w.WriteHeader(statusCode)
 	
+	// Marshal the response
 	jsonData, err := json.Marshal(response)
 	if err != nil {
 		log.Printf("Error marshaling response: %v", err)
-		http.Error(w, "Error encoding response", http.StatusInternalServerError)
+		// Send a fallback error response
+		fallbackResponse := Response{
+			Success: false,
+			Error:   "Internal server error",
+		}
+		fallbackData, _ := json.Marshal(fallbackResponse)
+		w.Write(fallbackData)
 		return
 	}
 	
+	// Write the response
 	if _, err := w.Write(jsonData); err != nil {
 		log.Printf("Error writing response: %v", err)
 	}

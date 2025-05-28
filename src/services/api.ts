@@ -25,31 +25,74 @@ interface MeetingResponse {
   isPrivate: boolean;
 }
 
-async function handleResponse<T>(response: Response): Promise<ApiResponse<T>> {
-  const contentType = response.headers.get('content-type');
-  if (!contentType || !contentType.includes('application/json')) {
+// Retry configuration
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000; // 1 second
+
+// Helper function to delay execution
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function handleResponse<T>(response: Response, retryCount = 0): Promise<ApiResponse<T>> {
+  try {
+    // Check if response is JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      // If we haven't exceeded retry limit, try again
+      if (retryCount < MAX_RETRIES) {
+        await delay(RETRY_DELAY);
+        return handleResponse<T>(response, retryCount + 1);
+      }
+      return {
+        success: false,
+        data: null,
+        error: 'Invalid response format: Expected JSON'
+      };
+    }
+
+    // Try to parse JSON
+    let data;
+    try {
+      data = await response.json();
+    } catch (e) {
+      // If JSON parsing fails and we haven't exceeded retry limit, try again
+      if (retryCount < MAX_RETRIES) {
+        await delay(RETRY_DELAY);
+        return handleResponse<T>(response, retryCount + 1);
+      }
+      return {
+        success: false,
+        data: null,
+        error: 'Failed to parse server response'
+      };
+    }
+
+    // Handle error responses
+    if (!response.ok) {
+      return {
+        success: false,
+        data: null,
+        error: data.error || data.message || 'An error occurred'
+      };
+    }
+
+    // Return successful response
+    return {
+      success: true,
+      data: data.data,
+      message: data.message
+    };
+  } catch (error) {
+    // If any error occurs and we haven't exceeded retry limit, try again
+    if (retryCount < MAX_RETRIES) {
+      await delay(RETRY_DELAY);
+      return handleResponse<T>(response, retryCount + 1);
+    }
     return {
       success: false,
       data: null,
-      error: 'Invalid response format: Expected JSON'
+      error: error instanceof Error ? error.message : 'Unknown error occurred'
     };
   }
-
-  const data = await response.json();
-  
-  if (!response.ok) {
-    return {
-      success: false,
-      data: null,
-      error: data.error || data.message || 'An error occurred'
-    };
-  }
-
-  return {
-    success: true,
-    data: data.data,
-    message: data.message
-  };
 }
 
 async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
@@ -63,6 +106,8 @@ async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<A
     const response = await fetch(`${API_URL}${url}`, {
       ...options,
       headers,
+      mode: 'cors',
+      credentials: 'include',
     });
     
     return handleResponse<T>(response);
@@ -108,6 +153,8 @@ async function fetchWithAuth<T>(url: string, options: RequestInit = {}): Promise
     const response = await fetch(`${API_URL}${url}`, {
       ...options,
       headers,
+      mode: 'cors',
+      credentials: 'include',
     });
     
     if (response.status === 401) {
