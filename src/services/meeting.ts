@@ -1,6 +1,7 @@
 import Peer from 'peerjs';
 import { useMeetingStore } from '../stores/meetingStore';
 import { useAuthStore } from '../stores/authStore';
+import { api } from './api';
 
 export interface Participant {
   id: string;
@@ -17,6 +18,9 @@ export class MeetingService {
   private calls: Map<string, any> = new Map();
   private meetingId: string | null = null;
   private isInitialized = false;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  private reconnectTimeout: NodeJS.Timeout | null = null;
 
   constructor() {
     this.handleIncomingCall = this.handleIncomingCall.bind(this);
@@ -41,13 +45,27 @@ export class MeetingService {
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
             {
               urls: 'turn:openrelay.metered.ca:80',
               username: 'openrelayproject',
               credential: 'openrelayproject',
             },
+            {
+              urls: 'turn:openrelay.metered.ca:443',
+              username: 'openrelayproject',
+              credential: 'openrelayproject',
+            },
+            {
+              urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+              username: 'openrelayproject',
+              credential: 'openrelayproject',
+            },
           ],
+          iceCandidatePoolSize: 10,
         },
+        debug: 2,
       });
 
       await this.setupPeerEventHandlers();
@@ -65,11 +83,21 @@ export class MeetingService {
         isHost: true,
       });
 
+      await this.notifyServerJoin(meetingId, peerId);
+
       this.isInitialized = true;
       return true;
     } catch (error) {
       console.error('Failed to initialize meeting:', error);
       return false;
+    }
+  }
+
+  private async notifyServerJoin(meetingId: string, peerId: string): Promise<void> {
+    try {
+      await api.notifyJoin(meetingId, peerId);
+    } catch (error) {
+      console.error('Failed to notify server about join:', error);
     }
   }
 
@@ -82,6 +110,7 @@ export class MeetingService {
 
       this.peer.on('open', (id) => {
         console.log('Peer connected with ID:', id);
+        this.reconnectAttempts = 0;
         resolve();
       });
 
@@ -91,15 +120,17 @@ export class MeetingService {
       this.peer.on('error', (error) => {
         console.error('Peer error:', error);
         if (!this.isInitialized) reject(error);
+        this.handlePeerError(error);
       });
 
       this.peer.on('disconnected', () => {
         console.log('Peer disconnected');
-        this.reconnectPeer();
+        this.handleDisconnection();
       });
 
       this.peer.on('close', () => {
         console.log('Peer connection closed');
+        this.handleDisconnection();
       });
 
       setTimeout(() => {
@@ -110,12 +141,44 @@ export class MeetingService {
     });
   }
 
+  private handlePeerError(error: any): void {
+    const { setError } = useMeetingStore.getState();
+    
+    if (error.type === 'peer-unavailable') {
+      setError('Peer is not available. They may have left the meeting.');
+    } else if (error.type === 'network') {
+      setError('Network error. Please check your connection.');
+      this.handleDisconnection();
+    } else {
+      setError('Connection error. Please try rejoining the meeting.');
+    }
+  }
+
+  private handleDisconnection(): void {
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+      
+      if (this.reconnectTimeout) {
+        clearTimeout(this.reconnectTimeout);
+      }
+
+      this.reconnectTimeout = setTimeout(() => {
+        this.reconnectPeer();
+      }, delay);
+    } else {
+      const { setError } = useMeetingStore.getState();
+      setError('Connection lost. Please refresh the page to rejoin.');
+    }
+  }
+
   private reconnectPeer(): void {
     if (this.peer && !this.peer.destroyed) {
       try {
         this.peer.reconnect();
       } catch (error) {
         console.error('Failed to reconnect peer:', error);
+        this.handleDisconnection();
       }
     }
   }
@@ -123,15 +186,29 @@ export class MeetingService {
   private async getLocalStream(): Promise<void> {
     try {
       const constraints = {
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 },
+          facingMode: 'user',
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,
+          channelCount: 2,
+        },
       };
 
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (error) {
       console.error('Failed to access media devices:', error);
       try {
-        this.localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        this.localStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
       } catch (fallbackError) {
         console.error('Fallback media access failed:', fallbackError);
         throw fallbackError;
@@ -165,15 +242,23 @@ export class MeetingService {
 
   private handlePeerConnection(conn: any): void {
     console.log('Data connection from:', conn.peer);
+    
     conn.on('data', (data: any) => {
       if (data.type === 'chat') {
         const { addMessage } = useMeetingStore.getState();
         addMessage(data.sender, data.message);
+      } else if (data.type === 'participant-update') {
+        const { updateParticipant } = useMeetingStore.getState();
+        updateParticipant(data.participantId, data.updates);
       }
     });
 
     conn.on('close', () => {
       console.log('Data connection closed:', conn.peer);
+    });
+
+    conn.on('error', (error: any) => {
+      console.error('Data connection error:', error);
     });
   }
 
@@ -234,6 +319,8 @@ export class MeetingService {
     const { toggleAudio } = useMeetingStore.getState();
     toggleAudio();
 
+    this.notifyParticipantUpdate({ isAudioEnabled: !isEnabled });
+
     return !isEnabled;
   }
 
@@ -246,7 +333,25 @@ export class MeetingService {
     const { toggleVideo } = useMeetingStore.getState();
     toggleVideo();
 
+    this.notifyParticipantUpdate({ isVideoEnabled: !isEnabled });
+
     return !isEnabled;
+  }
+
+  private notifyParticipantUpdate(updates: Partial<Participant>): void {
+    if (!this.peer) return;
+
+    const data = {
+      type: 'participant-update',
+      participantId: this.peer.id,
+      updates,
+    };
+
+    for (const [, call] of this.calls) {
+      if (call.connection) {
+        call.connection.send(data);
+      }
+    }
   }
 
   async toggleScreenShare(): Promise<boolean> {
@@ -255,7 +360,10 @@ export class MeetingService {
 
       if (!isScreenSharing) {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
+          video: {
+            cursor: 'always',
+            displaySurface: 'monitor',
+          },
           audio: true,
         });
 
@@ -292,7 +400,14 @@ export class MeetingService {
 
   private async stopScreenShare(): Promise<boolean> {
     try {
-      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      const cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 },
+          facingMode: 'user',
+        },
+      });
       const cameraTrack = cameraStream.getVideoTracks()[0];
 
       for (const [, call] of this.calls) {
@@ -316,6 +431,25 @@ export class MeetingService {
     } catch (error) {
       console.error('Failed to stop screen sharing:', error);
       return false;
+    }
+  }
+
+  cleanup(): void {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+    }
+
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => track.stop());
+    }
+
+    for (const [, call] of this.calls) {
+      call.close();
+    }
+    this.calls.clear();
+
+    if (this.peer) {
+      this.peer.destroy();
     }
   }
 }

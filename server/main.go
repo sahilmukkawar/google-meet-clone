@@ -432,6 +432,56 @@ func getMeetingHandler(w http.ResponseWriter, r *http.Request) {
 	sendSuccessResponse(w, meeting)
 }
 
+func notifyJoinHandler(w http.ResponseWriter, r *http.Request) {
+	userID := getUserIDFromToken(r)
+	if userID == "" {
+		sendErrorResponse(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	vars := mux.Vars(r)
+	meetingID := vars["id"]
+
+	var req struct {
+		PeerID string `json:"peerId"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.PeerID == "" {
+		sendErrorResponse(w, "Peer ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify meeting exists and user has access
+	var meeting Meeting
+	err := db.Meetings.FindOne(context.Background(), bson.M{"_id": meetingID}).Decode(&meeting)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			sendErrorResponse(w, "Meeting not found", http.StatusNotFound)
+		} else {
+			log.Printf("Database error fetching meeting: %v", err)
+			sendErrorResponse(w, "Database error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if meeting.IsPrivate && meeting.CreatedBy != userID {
+		sendErrorResponse(w, "You do not have access to this meeting", http.StatusForbidden)
+		return
+	}
+
+	// Log the join event
+	log.Printf("User %s joined meeting %s with peer ID %s", userID, meetingID, req.PeerID)
+
+	sendSuccessResponse(w, map[string]string{
+		"message": "Successfully joined meeting",
+	})
+}
+
 func getUserIDFromToken(r *http.Request) string {
 	// Try Authorization header first
 	token := r.Header.Get("Authorization")
@@ -482,6 +532,7 @@ func main() {
 	api.HandleFunc("/meetings", createMeetingHandler).Methods("POST", "OPTIONS")
 	api.HandleFunc("/meetings", getMeetingsHandler).Methods("GET", "OPTIONS")
 	api.HandleFunc("/meetings/{id}", getMeetingHandler).Methods("GET", "OPTIONS")
+	api.HandleFunc("/meetings/{id}/join", notifyJoinHandler).Methods("POST", "OPTIONS")
 
 	// Health check endpoint
 	api.HandleFunc("/health", healthCheckHandler).Methods("GET", "OPTIONS")

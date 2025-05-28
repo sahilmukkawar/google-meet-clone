@@ -281,6 +281,14 @@ export const api = {
   getMeetings: async () => {
     return fetchWithAuth<MeetingResponse[]>('/meetings');
   },
+
+  // Meeting participant endpoints
+  notifyJoin: async (meetingId: string, peerId: string) => {
+    return fetchWithAuth<void>(`/meetings/${meetingId}/join`, {
+      method: 'POST',
+      body: JSON.stringify({ peerId }),
+    });
+  },
   
   // User endpoints
   getProfile: async () => {

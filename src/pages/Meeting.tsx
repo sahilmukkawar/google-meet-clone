@@ -3,11 +3,12 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useMeetingStore } from '../stores/meetingStore';
 import { useAuthStore } from '../stores/authStore';
 import { api } from '../services/api';
-import { initializeMeeting, leaveCall, toggleAudio, toggleVideo } from '../services/meeting';
+import { MeetingService } from '../services/meeting';
 import Button from '../components/ui/Button';
 import { 
   Mic, MicOff, Video as VideoIcon, VideoOff, 
-  MonitorUp, MessageCircle, UserPlus, X, Phone
+  MonitorUp, MessageCircle, UserPlus, X, Phone,
+  AlertCircle
 } from 'lucide-react';
 
 interface MeetingData {
@@ -27,24 +28,24 @@ const Meeting = () => {
     isScreenSharing,
     isChatOpen,
     messages,
+    error,
     toggleAudio: toggleAudioState,
     toggleVideo: toggleVideoState,
     toggleScreenSharing: toggleScreenSharingState,
     toggleChat,
-    addMessage
+    addMessage,
+    setError,
+    clearError
   } = useMeetingStore();
   
   const [meeting, setMeeting] = useState<MeetingData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [showAccessDenied, setShowAccessDenied] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [chatMessage, setChatMessage] = useState('');
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(false);
-  const [showAccessDenied, setShowAccessDenied] = useState(false);
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
-  const peerRef = useRef<any>(null);
+  const meetingServiceRef = useRef<MeetingService | null>(null);
   
   // Check authentication and meeting access
   useEffect(() => {
@@ -54,7 +55,7 @@ const Meeting = () => {
       setIsLoading(false);
       return;
     }
-  }, [user]);
+  }, [user, setError]);
   
   // Fetch meeting data
   useEffect(() => {
@@ -87,7 +88,7 @@ const Meeting = () => {
     };
     
     fetchMeeting();
-  }, [id, user]);
+  }, [id, user, setError]);
   
   // Initialize WebRTC when meeting data is loaded
   useEffect(() => {
@@ -95,22 +96,35 @@ const Meeting = () => {
     
     const setupMeeting = async () => {
       try {
-        // Get local media stream
+        // Initialize meeting service
+        meetingServiceRef.current = new MeetingService();
+        const success = await meetingServiceRef.current.initializeMeeting(meeting.id);
+        
+        if (!success) {
+          setError('Failed to initialize meeting connection');
+          return;
+        }
+        
+        // Get local stream
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+            facingMode: 'user',
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
         });
         
-        // Set local stream
         setLocalStream(stream);
         
-        // Set local video element
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
-        
-        // Initialize peer connection
-        peerRef.current = initializeMeeting(meeting.id);
         
       } catch (err) {
         console.error('Error accessing media devices:', err);
@@ -122,119 +136,58 @@ const Meeting = () => {
     
     // Cleanup function
     return () => {
-      if (peerRef.current) {
-        leaveCall(peerRef.current);
+      if (meetingServiceRef.current) {
+        meetingServiceRef.current.cleanup();
       }
       
       if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
       }
     };
-  }, [meeting, user]);
+  }, [meeting, user, setError]);
   
   const handleToggleAudio = async () => {
     try {
-      if (!localStream) {
-        throw new Error('No local stream available');
+      if (!meetingServiceRef.current) return;
+      
+      const success = meetingServiceRef.current.toggleAudio();
+      if (!success) {
+        setError('Failed to toggle audio');
+        return;
       }
       
-      const audioTracks = localStream.getAudioTracks();
-      if (audioTracks.length === 0) {
-        throw new Error('No audio tracks available');
-      }
-
-      // Toggle audio state
-      const newMutedState = !isMuted;
-      setIsMuted(newMutedState);
       toggleAudioState();
-      
-      // Enable/disable all audio tracks
-      audioTracks.forEach(track => {
-        track.enabled = !newMutedState;
-      });
-
-      // Update peer connection if it exists
-      if (peerRef.current) {
-        const senders = peerRef.current.getSenders();
-        const audioSender = senders.find(sender => sender.track?.kind === 'audio');
-        if (audioSender) {
-          audioSender.track.enabled = !newMutedState;
-        }
-      }
     } catch (err) {
       console.error('Error toggling audio:', err);
       setError('Failed to toggle audio');
-      // Revert state on error
-      setIsMuted(!isMuted);
-      toggleAudioState();
     }
   };
   
   const handleToggleVideo = async () => {
     try {
-      if (!localStream) {
-        throw new Error('No local stream available');
+      if (!meetingServiceRef.current) return;
+      
+      const success = meetingServiceRef.current.toggleVideo();
+      if (!success) {
+        setError('Failed to toggle video');
+        return;
       }
       
-      const videoTracks = localStream.getVideoTracks();
-      if (videoTracks.length === 0) {
-        throw new Error('No video tracks available');
-      }
-
-      // Toggle video state
-      const newVideoState = !isVideoOff;
-      setIsVideoOff(newVideoState);
       toggleVideoState();
-      
-      // Enable/disable all video tracks
-      videoTracks.forEach(track => {
-        track.enabled = !newVideoState;
-      });
-
-      // Update peer connection if it exists
-      if (peerRef.current) {
-        const senders = peerRef.current.getSenders();
-        const videoSender = senders.find(sender => sender.track?.kind === 'video');
-        if (videoSender) {
-          videoSender.track.enabled = !newVideoState;
-        }
-      }
-
-      // Update video element visibility
-      if (localVideoRef.current) {
-        localVideoRef.current.style.display = newVideoState ? 'none' : 'block';
-      }
     } catch (err) {
       console.error('Error toggling video:', err);
       setError('Failed to toggle video');
-      // Revert state on error
-      setIsVideoOff(!isVideoOff);
-      toggleVideoState();
     }
   };
   
   const handleToggleScreenSharing = async () => {
     try {
-      if (!isScreenSharing) {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-        });
-        
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = screenStream;
-        }
-        
-        // Handle screen sharing stop
-        screenStream.getVideoTracks()[0].onended = () => {
-          if (localStream && localVideoRef.current) {
-            localVideoRef.current.srcObject = localStream;
-          }
-          toggleScreenSharingState();
-        };
-      } else {
-        if (localStream && localVideoRef.current) {
-          localVideoRef.current.srcObject = localStream;
-        }
+      if (!meetingServiceRef.current) return;
+      
+      const success = await meetingServiceRef.current.toggleScreenShare();
+      if (!success) {
+        setError('Failed to toggle screen sharing');
+        return;
       }
       
       toggleScreenSharingState();
@@ -245,8 +198,8 @@ const Meeting = () => {
   };
   
   const handleLeaveCall = () => {
-    if (peerRef.current) {
-      leaveCall(peerRef.current);
+    if (meetingServiceRef.current) {
+      meetingServiceRef.current.cleanup();
     }
     
     if (localStream) {
@@ -381,24 +334,38 @@ const Meeting = () => {
         )}
       </div>
       
+      {/* Error notification */}
+      {error && (
+        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-red-500 text-white px-4 py-2 rounded-md flex items-center gap-2">
+          <AlertCircle className="w-5 h-5" />
+          <span>{error}</span>
+          <button 
+            className="ml-2 hover:text-gray-200"
+            onClick={() => clearError()}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+      
       {/* Control bar */}
       <div className="bg-gray-800 px-4 py-3 flex justify-center items-center gap-4">
         <Button
           variant="outline"
           size="sm"
-          className={`rounded-full ${isMuted ? 'bg-red-500 text-white' : 'text-white'}`}
+          className={`rounded-full ${!isAudioEnabled ? 'bg-red-500 text-white' : 'text-white'}`}
           onClick={handleToggleAudio}
         >
-          {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+          {!isAudioEnabled ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
         </Button>
         
         <Button
           variant="outline"
           size="sm"
-          className={`rounded-full ${isVideoOff ? 'bg-red-500 text-white' : 'text-white'}`}
+          className={`rounded-full ${!isVideoEnabled ? 'bg-red-500 text-white' : 'text-white'}`}
           onClick={handleToggleVideo}
         >
-          {isVideoOff ? <VideoOff className="w-5 h-5" /> : <VideoIcon className="w-5 h-5" />}
+          {!isVideoEnabled ? <VideoOff className="w-5 h-5" /> : <VideoIcon className="w-5 h-5" />}
         </Button>
         
         <Button
