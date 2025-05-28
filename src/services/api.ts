@@ -37,12 +37,13 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 // Helper function to check if server is reachable
 async function checkServerHealth(): Promise<boolean> {
   try {
-    const response = await fetch(`${API_URL.replace('/api', '')}/health`, {
+    const response = await fetch(`${API_URL}/health`, {
       method: 'GET',
       headers: {
         'Accept': 'application/json'
       },
       mode: 'cors',
+      credentials: 'include',
     });
     return response.ok;
   } catch (error) {

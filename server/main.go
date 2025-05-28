@@ -499,7 +499,7 @@ func main() {
 	api.HandleFunc("/meetings/{id}", getMeetingHandler).Methods("GET", "OPTIONS")
 
 	// Health check endpoint
-	r.HandleFunc("/health", healthCheckHandler).Methods("GET", "OPTIONS")
+	api.HandleFunc("/health", healthCheckHandler).Methods("GET", "OPTIONS")
 
 	// CORS setup
 	c := cors.New(cors.Options{
