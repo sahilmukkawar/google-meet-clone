@@ -81,22 +81,22 @@ func main() {
 	// Health check endpoint
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "https://famous-sprite-14c531.netlify.app")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}).Methods("GET", "OPTIONS")
 	
 	// CORS setup with more specific options
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   []string{"https://famous-sprite-14c531.netlify.app"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"},
 		ExposedHeaders:   []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
 		MaxAge:           300,
 		Debug:            true,
-		AllowOriginFunc: func(origin string) bool {
-			log.Printf("Request origin: %s", origin)
-			return true
-		},
 	})
 	
 	// Apply CORS middleware to router
@@ -106,6 +106,18 @@ func main() {
 	loggedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Incoming request: %s %s", r.Method, r.URL.Path)
 		log.Printf("Request headers: %v", r.Header)
+		
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
+			w.Header().Set("Access-Control-Allow-Origin", "https://famous-sprite-14c531.netlify.app")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Max-Age", "300")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		
 		handler.ServeHTTP(w, r)
 	})
 	
@@ -132,9 +144,10 @@ func main() {
 func sendJSONResponse(w http.ResponseWriter, statusCode int, response Response) {
 	// Ensure content type is set
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", "https://famous-sprite-14c531.netlify.app")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
 	
 	// Handle preflight requests
 	if statusCode == http.StatusOK {

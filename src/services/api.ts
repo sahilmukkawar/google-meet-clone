@@ -1,4 +1,5 @@
 const API_URL = import.meta.env.VITE_API_URL || 'https://google-meet-clone-ma9v.onrender.com/api';
+const FRONTEND_URL = 'https://famous-sprite-14c531.netlify.app';
 
 export interface ApiResponse<T> {
   success: boolean;
@@ -122,7 +123,7 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise
     const headers = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'Origin': window.location.origin,
+      'Origin': FRONTEND_URL,
       ...options.headers,
     };
 
@@ -206,6 +207,7 @@ async function fetchWithAuth<T>(url: string, options: RequestInit = {}): Promise
       ...options,
       headers: {
         'Authorization': `Bearer ${token}`,
+        'Origin': FRONTEND_URL,
         ...options.headers,
       },
       mode: 'cors',
