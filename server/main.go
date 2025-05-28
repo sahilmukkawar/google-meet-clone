@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,11 +29,13 @@ const (
 	CookieName  = "session_token"
 )
 
-// Allowed origins for CORS
+// Updated allowed origins - include your Render URL
 var allowedOrigins = []string{
 	"https://famous-sprite-14c531.netlify.app",
 	"https://google-meet-clone-lovat.vercel.app",
+	"https://google-meet-clone-ma9v.onrender.com", // Added your Render URL
 	"http://localhost:5173",
+	"http://localhost:3000",
 }
 
 // Models
@@ -79,25 +83,40 @@ func initMongoDB() error {
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		log.Printf("Started %s %s", r.Method, r.URL.Path)
-		log.Printf("Request headers: %v", r.Header)
+		log.Printf("Started %s %s from %s", r.Method, r.URL.Path, r.Header.Get("Origin"))
 		next.ServeHTTP(w, r)
 		log.Printf("Completed %s %s in %v", r.Method, r.URL.Path, time.Since(start))
 	})
 }
 
-func jsonMiddleware(next http.Handler) http.Handler {
+// Improved CORS middleware
+func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
+		
+		// Always set basic headers
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		
+		// Handle CORS
 		if origin != "" && isAllowedOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, Set-Cookie")
-			w.Header().Set("Vary", "Origin")
+		} else if origin == "" {
+			// For requests without origin (like direct API calls), allow first origin
+			w.Header().Set("Access-Control-Allow-Origin", allowedOrigins[0])
 		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, Set-Cookie")
+		w.Header().Set("Vary", "Origin")
+		
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		
 		next.ServeHTTP(w, r)
 	})
 }
@@ -139,21 +158,6 @@ func clearSessionCookie(w http.ResponseWriter) {
 }
 
 func sendJSONResponse(w http.ResponseWriter, statusCode int, response Response) {
-	origin := w.Header().Get("Origin")
-	if origin == "" {
-		origin = allowedOrigins[0] // Default to first allowed origin
-	}
-
-	if isAllowedOrigin(origin) {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, Set-Cookie")
-		w.Header().Set("Vary", "Origin")
-	}
-
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(statusCode)
 
 	jsonData, err := json.Marshal(response)
@@ -209,11 +213,6 @@ func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func registerHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	var req struct {
 		Name     string `json:"name"`
 		Email    string `json:"email"`
@@ -280,11 +279,6 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -332,21 +326,11 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func logoutHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	clearSessionCookie(w)
 	sendSuccessResponse(w, map[string]string{"message": "Logged out successfully"})
 }
 
 func createMeetingHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	userID := getUserIDFromToken(r)
 	if userID == "" {
 		sendErrorResponse(w, "Unauthorized", http.StatusUnauthorized)
@@ -390,11 +374,6 @@ func createMeetingHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getMeetingsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	userID := getUserIDFromToken(r)
 	if userID == "" {
 		sendErrorResponse(w, "Unauthorized", http.StatusUnauthorized)
@@ -416,15 +395,14 @@ func getMeetingsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if meetings == nil {
+		meetings = []Meeting{}
+	}
+
 	sendSuccessResponse(w, meetings)
 }
 
 func getMeetingHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	userID := getUserIDFromToken(r)
 	if userID == "" {
 		sendErrorResponse(w, "Unauthorized", http.StatusUnauthorized)
@@ -455,17 +433,24 @@ func getMeetingHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getUserIDFromToken(r *http.Request) string {
+	// Try Authorization header first
 	token := r.Header.Get("Authorization")
-	if token == "" {
-		return ""
+	if token != "" {
+		if len(token) > 7 && token[:7] == "Bearer " {
+			token = token[7:]
+		}
+		if len(token) > 6 && token[:6] == "token_" {
+			return token[6:]
+		}
 	}
 
-	if len(token) > 7 && token[:7] == "Bearer " {
-		token = token[7:]
-	}
-
-	if len(token) > 6 && token[:6] == "token_" {
-		return token[6:]
+	// Try cookie as fallback
+	cookie, err := r.Cookie(CookieName)
+	if err == nil && cookie.Value != "" {
+		token = cookie.Value
+		if len(token) > 6 && token[:6] == "token_" {
+			return token[6:]
+		}
 	}
 
 	return ""
@@ -483,7 +468,7 @@ func main() {
 
 	// Apply middleware
 	r.Use(loggingMiddleware)
-	r.Use(jsonMiddleware)
+	r.Use(corsMiddleware)
 
 	// API routes
 	api := r.PathPrefix("/api").Subrouter()
@@ -500,8 +485,12 @@ func main() {
 
 	// Health check endpoint
 	api.HandleFunc("/health", healthCheckHandler).Methods("GET", "OPTIONS")
+	
+	// Root level health check (for render health checks)
+	r.HandleFunc("/health", healthCheckHandler).Methods("GET", "OPTIONS")
+	r.HandleFunc("/", healthCheckHandler).Methods("GET", "OPTIONS") // Root endpoint
 
-	// CORS setup
+	// Additional CORS setup using rs/cors package
 	c := cors.New(cors.Options{
 		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -509,7 +498,7 @@ func main() {
 		ExposedHeaders:   []string{"Content-Type", "Authorization", "Set-Cookie"},
 		AllowCredentials: true,
 		MaxAge:           300,
-		Debug:            true,
+		Debug:            false, // Set to true for debugging
 	})
 
 	// Apply CORS middleware
@@ -530,17 +519,22 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start server with graceful shutdown
+	// Create channel for shutdown signals
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start server in a goroutine
 	go func() {
 		log.Printf("Server starting on port %s", port)
+		log.Printf("Allowed origins: %v", allowedOrigins)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)
 		}
 	}()
 
 	// Wait for interrupt signal
-	quit := make(chan os.Signal, 1)
 	<-quit
+	log.Println("Shutting down server...")
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
