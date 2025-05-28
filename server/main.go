@@ -42,6 +42,7 @@ type Response struct {
 	Success bool        `json:"success"`
 	Data    interface{} `json:"data,omitempty"`
 	Message string      `json:"message,omitempty"`
+	Error   string      `json:"error,omitempty"`
 }
 
 func main() {
@@ -66,18 +67,20 @@ func main() {
 	api.HandleFunc("/meetings", getMeetingsHandler).Methods("GET", "OPTIONS")
 	api.HandleFunc("/meetings/{id}", getMeetingHandler).Methods("GET", "OPTIONS")
 	
-	// CORS setup
+	// CORS setup with more specific options
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "Accept"},
+		ExposedHeaders:   []string{"Content-Type"},
 		AllowCredentials: true,
+		MaxAge:           300,
 	})
 	
 	// Apply CORS middleware to router
 	handler := c.Handler(r)
 	
-	// Determine port (Render will provide PORT environment variable)
+	// Determine port
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -86,6 +89,36 @@ func main() {
 	// Start server
 	log.Printf("Server starting on port %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
+}
+
+func sendJSONResponse(w http.ResponseWriter, statusCode int, response Response) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(statusCode)
+	
+	jsonData, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Error marshaling response: %v", err)
+		http.Error(w, "Error encoding response", http.StatusInternalServerError)
+		return
+	}
+	
+	if _, err := w.Write(jsonData); err != nil {
+		log.Printf("Error writing response: %v", err)
+	}
+}
+
+func sendSuccessResponse(w http.ResponseWriter, data interface{}) {
+	sendJSONResponse(w, http.StatusOK, Response{
+		Success: true,
+		Data:    data,
+	})
+}
+
+func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
+	sendJSONResponse(w, statusCode, Response{
+		Success: false,
+		Error:   message,
+	})
 }
 
 // Authentication Handlers
@@ -351,28 +384,4 @@ func getUserIDFromToken(r *http.Request) string {
 	}
 	
 	return ""
-}
-
-func sendSuccessResponse(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	
-	response := Response{
-		Success: true,
-		Data:    data,
-	}
-	
-	json.NewEncoder(w).Encode(response)
-}
-
-func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	
-	response := Response{
-		Success: false,
-		Message: message,
-	}
-	
-	json.NewEncoder(w).Encode(response)
 }

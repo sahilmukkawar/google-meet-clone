@@ -25,10 +25,38 @@ interface MeetingResponse {
   isPrivate: boolean;
 }
 
+async function handleResponse<T>(response: Response): Promise<ApiResponse<T>> {
+  const contentType = response.headers.get('content-type');
+  if (!contentType || !contentType.includes('application/json')) {
+    return {
+      success: false,
+      data: null,
+      error: 'Invalid response format: Expected JSON'
+    };
+  }
+
+  const data = await response.json();
+  
+  if (!response.ok) {
+    return {
+      success: false,
+      data: null,
+      error: data.error || data.message || 'An error occurred'
+    };
+  }
+
+  return {
+    success: true,
+    data: data.data,
+    message: data.message
+  };
+}
+
 async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
   try {
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
+      'Accept': 'application/json',
       ...options.headers,
     };
     
@@ -37,21 +65,7 @@ async function fetchPublic<T>(url: string, options: RequestInit = {}): Promise<A
       headers,
     });
     
-    const data = await response.json();
-    
-    if (!response.ok) {
-      return { 
-        success: false, 
-        data: null, 
-        error: data.message || 'An error occurred' 
-      };
-    }
-    
-    return { 
-      success: true, 
-      data: data.data, 
-      message: data.message 
-    };
+    return handleResponse<T>(response);
   } catch (error) {
     console.error('API Error:', error);
     return { 
@@ -86,6 +100,7 @@ async function fetchWithAuth<T>(url: string, options: RequestInit = {}): Promise
     
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
+      'Accept': 'application/json',
       'Authorization': `Bearer ${token}`,
       ...options.headers,
     };
@@ -95,26 +110,17 @@ async function fetchWithAuth<T>(url: string, options: RequestInit = {}): Promise
       headers,
     });
     
-    const data = await response.json();
-    
-    if (!response.ok) {
-      // Handle unauthorized errors
-      if (response.status === 401) {
-        localStorage.removeItem('auth-storage');
-        window.location.href = '/login';
-      }
-      return { 
-        success: false, 
-        data: null, 
-        error: data.message || 'An error occurred' 
+    if (response.status === 401) {
+      localStorage.removeItem('auth-storage');
+      window.location.href = '/login';
+      return {
+        success: false,
+        data: null,
+        error: 'Session expired. Please login again.'
       };
     }
     
-    return { 
-      success: true, 
-      data: data.data, 
-      message: data.message 
-    };
+    return handleResponse<T>(response);
   } catch (error) {
     console.error('API Error:', error);
     return { 
