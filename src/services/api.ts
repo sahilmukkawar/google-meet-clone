@@ -199,46 +199,99 @@ async function fetchWithAuth<T>(
   if (!token) {
     return {
       success: false,
-      error: 'Authentication token not found',
+      error: 'Authentication token not found. Please log in again.',
     };
   }
 
-  const response = await fetch(`${API_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...options.headers,
-    },
-  });
+  try {
+    const response = await fetchWithTimeout(`${API_URL}${endpoint}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json',
+        'Origin': FRONTEND_URL,
+        ...options.headers,
+      },
+      mode: 'cors',
+      credentials: 'include',
+    });
 
-  return handleResponse<T>(response);
+    // Handle 401 Unauthorized
+    if (response.status === 401) {
+      localStorage.removeItem('auth-token');
+      return {
+        success: false,
+        error: 'Session expired. Please log in again.',
+      };
+    }
+
+    return handleResponse<T>(response);
+  } catch (error) {
+    console.error('API Error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred',
+    };
+  }
 }
 
 export const api = {
   // Auth endpoints
   async login(email: string, password: string): Promise<ApiResponse<AuthResponse>> {
-    const response = await fetch(`${API_URL}/auth/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ email, password }),
-    });
+    try {
+      const response = await fetchWithTimeout(`${API_URL}/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Origin': FRONTEND_URL,
+        },
+        body: JSON.stringify({ email, password }),
+        mode: 'cors',
+        credentials: 'include',
+      });
 
-    return handleResponse<AuthResponse>(response);
+      const result = await handleResponse<AuthResponse>(response);
+      if (result.success && result.data?.token) {
+        localStorage.setItem('auth-token', result.data.token);
+      }
+      return result;
+    } catch (error) {
+      console.error('Login error:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Login failed',
+      };
+    }
   },
   
   async register(name: string, email: string, password: string): Promise<ApiResponse<AuthResponse>> {
-    const response = await fetch(`${API_URL}/auth/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ name, email, password }),
-    });
+    try {
+      const response = await fetchWithTimeout(`${API_URL}/auth/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Origin': FRONTEND_URL,
+        },
+        body: JSON.stringify({ name, email, password }),
+        mode: 'cors',
+        credentials: 'include',
+      });
 
-    return handleResponse<AuthResponse>(response);
+      const result = await handleResponse<AuthResponse>(response);
+      if (result.success && result.data?.token) {
+        localStorage.setItem('auth-token', result.data.token);
+      }
+      return result;
+    } catch (error) {
+      console.error('Registration error:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Registration failed',
+      };
+    }
   },
   
   // Meeting endpoints
