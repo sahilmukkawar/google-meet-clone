@@ -23,14 +23,8 @@ interface AuthState {
 // Token validation helper
 const isValidToken = (token: string): boolean => {
   try {
-    // Basic JWT token validation
-    const parts = token.split('.');
-    if (parts.length !== 3) return false;
-    
-    // Check if token is expired
-    const payload = JSON.parse(atob(parts[1]));
-    const expirationTime = payload.exp * 1000; // Convert to milliseconds
-    return Date.now() < expirationTime;
+    // Check if token follows the format "token_<userID>"
+    return token.startsWith('token_') && token.length > 6;
   } catch {
     return false;
   }
@@ -58,9 +52,9 @@ export const useAuthStore = create<AuthState>()(
             throw new Error('Invalid user data');
           }
           
-          // Validate token format and expiration
+          // Validate token format
           if (!isValidToken(token)) {
-            throw new Error('Invalid or expired token');
+            throw new Error('Invalid token format');
           }
           
           set({ 
@@ -99,10 +93,10 @@ export const useAuthStore = create<AuthState>()(
             return false;
           }
           
-          // Validate token on each auth check
+          // Validate token format
           if (!isValidToken(state.token)) {
             state.logout();
-            throw new Error('Session expired');
+            throw new Error('Invalid token format');
           }
           
           set({ isLoading: false });
