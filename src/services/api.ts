@@ -23,6 +23,8 @@ export interface Meeting {
   title: string;
   createdBy: string;
   isPrivate: boolean;
+  maxParticipants?: number;
+  scheduledFor?: string;
   createdAt: string;
 }
 
@@ -106,6 +108,19 @@ async function handleResponse<T>(response: Response, retryCount = 0): Promise<Ap
 
     // Handle error responses
     if (!response.ok) {
+      // Handle authentication errors
+      if (response.status === 401) {
+        // Clear auth state
+        localStorage.removeItem('auth-token');
+        const authStore = useAuthStore.getState();
+        authStore.logout();
+        
+        return {
+          success: false,
+          error: 'Session expired. Please log in again.'
+        };
+      }
+      
       return {
         success: false,
         error: data.error || data.message || 'An error occurred'
@@ -203,49 +218,108 @@ async function fetchWithAuth<T>(
     };
   }
 
-  const response = await fetch(`${API_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...options.headers,
-    },
-  });
+  try {
+    const response = await fetchWithTimeout(`${API_URL}${endpoint}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'Origin': FRONTEND_URL,
+        ...options.headers,
+      },
+      mode: 'cors',
+      credentials: 'include',
+    });
 
-  return handleResponse<T>(response);
+    return handleResponse<T>(response);
+  } catch (error) {
+    console.error('API Error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred'
+    };
+  }
 }
 
 export const api = {
   // Auth endpoints
   async login(email: string, password: string): Promise<ApiResponse<AuthResponse>> {
-    const response = await fetch(`${API_URL}/auth/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ email, password }),
-    });
+    try {
+      const response = await fetchWithTimeout(`${API_URL}/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Origin': FRONTEND_URL,
+        },
+        body: JSON.stringify({ email, password }),
+        mode: 'cors',
+        credentials: 'include',
+      });
 
-    return handleResponse<AuthResponse>(response);
+      const result = await handleResponse<AuthResponse>(response);
+      
+      if (result.success && result.data) {
+        // Store token in localStorage
+        localStorage.setItem('auth-token', result.data.token);
+      }
+      
+      return result;
+    } catch (error) {
+      console.error('Login error:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Login failed'
+      };
+    }
   },
   
   async register(name: string, email: string, password: string): Promise<ApiResponse<AuthResponse>> {
-    const response = await fetch(`${API_URL}/auth/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ name, email, password }),
-    });
+    try {
+      const response = await fetchWithTimeout(`${API_URL}/auth/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Origin': FRONTEND_URL,
+        },
+        body: JSON.stringify({ name, email, password }),
+        mode: 'cors',
+        credentials: 'include',
+      });
 
-    return handleResponse<AuthResponse>(response);
+      const result = await handleResponse<AuthResponse>(response);
+      
+      if (result.success && result.data) {
+        // Store token in localStorage
+        localStorage.setItem('auth-token', result.data.token);
+      }
+      
+      return result;
+    } catch (error) {
+      console.error('Registration error:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Registration failed'
+      };
+    }
   },
   
   // Meeting endpoints
-  async createMeeting(title: string, isPrivate: boolean): Promise<ApiResponse<Meeting>> {
+  async createMeeting(
+    title: string, 
+    scheduledFor?: Date,
+    options?: {
+      isPrivate?: boolean;
+      maxParticipants?: number;
+    }
+  ): Promise<ApiResponse<Meeting>> {
     return fetchWithAuth<Meeting>('/meetings', {
       method: 'POST',
-      body: JSON.stringify({ title, isPrivate }),
+      body: JSON.stringify({
+        title,
+        scheduledFor: scheduledFor?.toISOString(),
+        isPrivate: options?.isPrivate || false,
+        maxParticipants: options?.maxParticipants || 50,
+      }),
     });
   },
   
@@ -279,7 +353,7 @@ export const api = {
     updates: Partial<Participant>
   ): Promise<ApiResponse<void>> {
     return fetchWithAuth<void>(`/meetings/${meetingId}/participants`, {
-      method: 'PUT',
+      method: 'PATCH',
       body: JSON.stringify(updates),
     });
   },

@@ -3,6 +3,13 @@ import { useMeetingStore } from '../stores/meetingStore';
 import { useAuthStore } from '../stores/authStore';
 import { api } from './api';
 
+// Add type definition for NodeJS.Timeout
+declare global {
+  namespace NodeJS {
+    interface Timeout {}
+  }
+}
+
 export interface Participant {
   id: string;
   name: string;
@@ -20,7 +27,7 @@ export class MeetingService {
   private isInitialized = false;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
-  private reconnectTimeout: NodeJS.Timeout | null = null;
+  private reconnectTimeout: number | null = null;
 
   constructor() {
     this.handleIncomingCall = this.handleIncomingCall.bind(this);
@@ -163,7 +170,7 @@ export class MeetingService {
         clearTimeout(this.reconnectTimeout);
       }
 
-      this.reconnectTimeout = setTimeout(() => {
+      this.reconnectTimeout = window.setTimeout(() => {
         this.reconnectPeer();
       }, delay);
     } else {
@@ -361,9 +368,8 @@ export class MeetingService {
       if (!isScreenSharing) {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
-            cursor: 'always',
             displaySurface: 'monitor',
-          },
+          } as MediaTrackConstraints,
           audio: true,
         });
 
