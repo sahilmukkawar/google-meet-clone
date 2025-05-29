@@ -1,6 +1,6 @@
 import { useAuthStore } from '../stores/authStore';
 
-const API_URL = import.meta.env.VITE_API_URL || 'https://google-meet-clone-ma9v.onrender.com/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api';
 const FRONTEND_URL = 'https://famous-sprite-14c531.netlify.app';
 
 export interface ApiResponse<T> {
