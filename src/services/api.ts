@@ -1,7 +1,7 @@
 import { useAuthStore } from '../stores/authStore';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api';
-const FRONTEND_URL = 'https://famous-sprite-14c531.netlify.app';
+const FRONTEND_URL = 'http://localhost:5173';
 
 export interface ApiResponse<T> {
   success: boolean;
@@ -327,21 +327,10 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise
   const timeoutId = setTimeout(() => controller.abort(), RETRY_CONFIG.TIMEOUT);
 
   try {
-    // Get browser and device info for better debugging
-    const userAgent = navigator.userAgent;
-    const clientInfo = {
-      timestamp: new Date().toISOString(),
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      language: navigator.language,
-      userAgent: userAgent,
-    };
-
     const headers = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
       'Origin': FRONTEND_URL,
-      'X-Client-Info': JSON.stringify(clientInfo),
-      'X-Request-ID': `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       ...options.headers,
     };
 
@@ -357,16 +346,7 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise
     return response;
   } catch (error) {
     clearTimeout(timeoutId);
-    
-    if (error instanceof Error) {
-      if (error.name === 'AbortError') {
-        throw new Error('Request timed out. Please check your internet connection.');
-      }
-      if (error.message.includes('fetch')) {
-        throw new Error('Network error. Please check your internet connection.');
-      }
-    }
-    
+    console.error('Fetch error:', error);
     throw error;
   }
 }
