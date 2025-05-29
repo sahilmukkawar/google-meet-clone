@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
@@ -75,7 +76,7 @@ func ConnectDB() error {
 func createIndexes(ctx context.Context) error {
 	// Create unique index on email field for users
 	_, err := Users.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    map[string]interface{}{"email": 1},
+		Keys:    bson.D{{Key: "email", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	})
 	if err != nil {
@@ -84,9 +85,9 @@ func createIndexes(ctx context.Context) error {
 
 	// Create compound index on meeting and participant for faster lookups
 	_, err = Participants.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: map[string]interface{}{
-			"meetingId": 1,
-			"userId":    1,
+		Keys: bson.D{
+			{Key: "meetingId", Value: 1},
+			{Key: "userId", Value: 1},
 		},
 		Options: options.Index().SetUnique(true),
 	})
@@ -96,9 +97,7 @@ func createIndexes(ctx context.Context) error {
 
 	// Create TTL index for participants to auto-remove after 24 hours
 	_, err = Participants.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: map[string]interface{}{
-			"lastActive": 1,
-		},
+		Keys: bson.D{{Key: "lastActive", Value: 1}},
 		Options: options.Index().SetExpireAfterSeconds(86400), // 24 hours
 	})
 	if err != nil {
@@ -107,7 +106,7 @@ func createIndexes(ctx context.Context) error {
 
 	// Create index on createdBy field for meetings
 	_, err = Meetings.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: map[string]interface{}{"createdBy": 1},
+		Keys: bson.D{{Key: "createdBy", Value: 1}},
 	})
 	if err != nil {
 		return err
@@ -115,7 +114,7 @@ func createIndexes(ctx context.Context) error {
 
 	// Create index on scheduledFor field for meetings
 	_, err = Meetings.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: map[string]interface{}{"scheduledFor": 1},
+		Keys: bson.D{{Key: "scheduledFor", Value: 1}},
 	})
 	if err != nil {
 		return err
