@@ -2,7 +2,6 @@ import Peer from 'peerjs';
 import { useMeetingStore } from '../stores/meetingStore';
 import { useAuthStore } from '../stores/authStore';
 import { api } from './api';
-import { MediaStream, MediaTrackConstraints } from 'webrtc-adapter';
 
 export interface Participant {
   id: string;
@@ -13,45 +12,15 @@ export interface Participant {
   isHost?: boolean;
 }
 
-interface DisplayMediaStreamConstraints {
-  video: {
-    cursor?: 'always' | 'motion' | 'never';
-    displaySurface?: 'monitor' | 'window' | 'browser';
-  };
-  audio?: boolean;
-}
-
-interface MediaTrack {
-  kind: string;
-  enabled: boolean;
-  stop(): void;
-}
-
-interface RTCPeerConnection {
-  getSenders(): Array<{
-    track?: MediaTrack;
-    replaceTrack(track: MediaTrack): Promise<void>;
-  }>;
-}
-
-interface PeerCall {
-  peer: string;
-  peerConnection: RTCPeerConnection;
-  connection?: {
-    send(data: any): void;
-  };
-  close(): void;
-}
-
 export class MeetingService {
   private peer: Peer | null = null;
   private localStream: MediaStream | null = null;
-  private calls: Map<string, PeerCall> = new Map();
+  private calls: Map<string, any> = new Map();
   private meetingId: string | null = null;
   private isInitialized = false;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
-  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private reconnectTimeout: NodeJS.Timeout | null = null;
 
   constructor() {
     this.handleIncomingCall = this.handleIncomingCall.bind(this);
@@ -105,16 +74,14 @@ export class MeetingService {
       const { setMeetingId, addParticipant } = useMeetingStore.getState();
       setMeetingId(meetingId);
 
-      if (this.localStream) {
-        addParticipant({
-          id: peerId,
-          name: user.name,
-          stream: this.localStream,
-          isAudioEnabled: true,
-          isVideoEnabled: true,
-          isHost: true,
-        });
-      }
+      addParticipant({
+        id: peerId,
+        name: user.name,
+        stream: this.localStream || undefined,
+        isAudioEnabled: true,
+        isVideoEnabled: true,
+        isHost: true,
+      });
 
       await this.notifyServerJoin(meetingId, peerId);
 
@@ -182,8 +149,6 @@ export class MeetingService {
     } else if (error.type === 'network') {
       setError('Network error. Please check your connection.');
       this.handleDisconnection();
-    } else if (error.type === 'permission-denied') {
-      setError('Camera/microphone access denied. Please check your permissions.');
     } else {
       setError('Connection error. Please try rejoining the meeting.');
     }
@@ -253,10 +218,7 @@ export class MeetingService {
 
   private handleIncomingCall(call: any): void {
     console.log('Incoming call from:', call.peer);
-    if (!this.localStream) {
-      console.error('No local stream available');
-      return;
-    }
+    if (!this.localStream) return;
 
     call.answer(this.localStream);
     this.calls.set(call.peer, call);
@@ -267,7 +229,6 @@ export class MeetingService {
     });
 
     call.on('close', () => {
-      console.log('Call closed:', call.peer);
       this.removeParticipant(call.peer);
       this.calls.delete(call.peer);
     });
@@ -402,12 +363,11 @@ export class MeetingService {
           video: {
             cursor: 'always',
             displaySurface: 'monitor',
-          } as MediaTrackConstraints,
+          },
           audio: true,
         });
 
         const videoTrack = screenStream.getVideoTracks()[0];
-        if (!videoTrack) throw new Error('No video track in screen stream');
 
         for (const [, call] of this.calls) {
           const sender = call.peerConnection.getSenders().find((s: any) => s.track?.kind === 'video');
@@ -449,10 +409,9 @@ export class MeetingService {
         },
       });
       const cameraTrack = cameraStream.getVideoTracks()[0];
-      if (!cameraTrack) throw new Error('No camera track available');
 
       for (const [, call] of this.calls) {
-        const sender = call.peerConnection.getSenders().find((s) => s.track?.kind === 'video');
+        const sender = call.peerConnection.getSenders().find((s: any) => s.track?.kind === 'video');
         if (sender) await sender.replaceTrack(cameraTrack);
       }
 
@@ -471,8 +430,6 @@ export class MeetingService {
       return true;
     } catch (error) {
       console.error('Failed to stop screen sharing:', error);
-      const { setError } = useMeetingStore.getState();
-      setError('Failed to stop screen sharing. Please try again.');
       return false;
     }
   }
@@ -483,7 +440,7 @@ export class MeetingService {
     }
 
     if (this.localStream) {
-      this.localStream.getTracks().forEach((track: MediaTrack) => track.stop());
+      this.localStream.getTracks().forEach(track => track.stop());
     }
 
     for (const [, call] of this.calls) {

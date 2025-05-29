@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { api } from '../services/api';
 
 export interface User {
   id: string;
@@ -14,11 +13,28 @@ interface AuthState {
   token: string | null;
   isLoading: boolean;
   error: string | null;
-  login: (user: User, token: string) => void;
+  login: (user: User, token: string) => Promise<void>;
   logout: () => void;
   checkAuth: () => Promise<boolean>;
+  setError: (error: string | null) => void;
   clearError: () => void;
 }
+
+// Token validation helper
+const isValidToken = (token: string): boolean => {
+  try {
+    // Basic JWT token validation
+    const parts = token.split('.');
+    if (parts.length !== 3) return false;
+    
+    // Check if token is expired
+    const payload = JSON.parse(atob(parts[1]));
+    const expirationTime = payload.exp * 1000; // Convert to milliseconds
+    return Date.now() < expirationTime;
+  } catch {
+    return false;
+  }
+};
 
 export const useAuthStore = create<AuthState>()(
   persist(
@@ -28,64 +44,81 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       isLoading: false,
       error: null,
-
-      login: (user, token) => {
-        if (!user || !token) {
-          set({ error: 'Invalid login data' });
-          return;
+      
+      login: async (user, token) => {
+        try {
+          set({ isLoading: true, error: null });
+          
+          if (!user || !token) {
+            throw new Error('Invalid login data');
+          }
+          
+          // Validate user data
+          if (!user.id || !user.name || !user.email) {
+            throw new Error('Invalid user data');
+          }
+          
+          // Validate token format and expiration
+          if (!isValidToken(token)) {
+            throw new Error('Invalid or expired token');
+          }
+          
+          set({ 
+            user, 
+            isAuthenticated: true, 
+            token,
+            isLoading: false
+          });
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Login failed';
+          set({ 
+            error: errorMessage,
+            isLoading: false 
+          });
+          throw new Error(errorMessage);
         }
-        // Store token in localStorage for API requests
-        localStorage.setItem('auth-token', token);
-        set({ 
-          user, 
-          isAuthenticated: true, 
-          token,
-          error: null
-        });
       },
-
+      
       logout: () => {
-        // Remove token from localStorage
-        localStorage.removeItem('auth-token');
         set({ 
           user: null, 
           isAuthenticated: false, 
           token: null,
-          error: null
+          error: null,
+          isLoading: false
         });
       },
-
+      
       checkAuth: async () => {
         const state = get();
-        if (!state.token) {
-          state.logout();
-          return false;
-        }
-
         try {
           set({ isLoading: true, error: null });
-          const response = await api.getProfile();
           
-          if (response.success && response.data) {
-            set({ 
-              user: response.data,
-              isAuthenticated: true,
-              isLoading: false
-            });
-            return true;
-          } else {
+          if (!state.token || !state.user) {
             state.logout();
             return false;
           }
+          
+          // Validate token on each auth check
+          if (!isValidToken(state.token)) {
+            state.logout();
+            throw new Error('Session expired');
+          }
+          
+          set({ isLoading: false });
+          return true;
         } catch (error) {
-          console.error('Auth check failed:', error);
+          const errorMessage = error instanceof Error ? error.message : 'Authentication check failed';
+          set({ 
+            error: errorMessage,
+            isLoading: false 
+          });
           state.logout();
           return false;
-        } finally {
-          set({ isLoading: false });
         }
       },
-
+      
+      setError: (error) => set({ error }),
       clearError: () => set({ error: null })
     }),
     {
