@@ -613,7 +613,10 @@ export class MeetingService {
 
   private async stopScreenShare(): Promise<boolean> {
     try {
-      const cameraStream = await navigator.mediaDevices.getUserMedia(this.getMediaConstraints());
+      const cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: this.getVideoConstraints(),
+        audio: this.getAudioConstraints()
+      });
       const cameraTrack = cameraStream.getVideoTracks()[0];
 
       for (const [, call] of this.calls) {
