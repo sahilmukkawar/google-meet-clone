@@ -1,51 +1,132 @@
-import Peer from 'peerjs';
+import Peer, { DataConnection, MediaConnection } from 'peerjs';
 import { useMeetingStore } from '../stores/meetingStore';
 import { useAuthStore } from '../stores/authStore';
 import { api } from './api';
 
-// Add type definition for NodeJS.Timeout
-declare global {
-  namespace NodeJS {
-    interface Timeout {}
-  }
-}
-
 export interface Participant {
   id: string;
   name: string;
+  email?: string;
+  avatar?: string;
   stream?: MediaStream;
   isAudioEnabled: boolean;
   isVideoEnabled: boolean;
+  isScreenSharing: boolean;
+  isHandRaised: boolean;
   isHost?: boolean;
+  isCoHost?: boolean;
+  connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+  joinedAt: Date;
+  lastActive: Date;
+  networkQuality: 'excellent' | 'good' | 'fair' | 'poor';
+  peerId: string;
+}
+
+export interface MeetingSettings {
+  quality: 'low' | 'medium' | 'high' | 'auto';
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+  enableBackgroundBlur: boolean;
+  maxParticipants: number;
+}
+
+export type MeetingEventType = 
+  | 'participant-joined'
+  | 'participant-left'
+  | 'participant-updated'
+  | 'stream-added'
+  | 'stream-removed'
+  | 'connection-quality-changed'
+  | 'meeting-ended'
+  | 'error'
+  | 'reconnecting'
+  | 'reconnected'
+  | 'chat-message'
+  | 'hand-raised'
+  | 'hand-lowered'
+  | 'screen-share-started'
+  | 'screen-share-ended';
+
+export interface MeetingEvent {
+  type: MeetingEventType;
+  data?: any;
+  timestamp: Date;
+  participantId?: string;
 }
 
 export class MeetingService {
   private peer: Peer | null = null;
   private localStream: MediaStream | null = null;
-  private calls: Map<string, any> = new Map();
+  private screenStream: MediaStream | null = null;
+  private calls: Map<string, MediaConnection> = new Map();
+  private dataConnections: Map<string, DataConnection> = new Map();
   private meetingId: string | null = null;
   private isInitialized = false;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectTimeout: number | null = null;
+  private eventListeners: Map<MeetingEventType, ((event: MeetingEvent) => void)[]> = new Map();
+  private settings: MeetingSettings = {
+    quality: 'auto',
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    enableBackgroundBlur: false,
+    maxParticipants: 50,
+  };
 
   constructor() {
     this.handleIncomingCall = this.handleIncomingCall.bind(this);
-    this.handlePeerConnection = this.handlePeerConnection.bind(this);
+    this.handleDataConnection = this.handleDataConnection.bind(this);
   }
 
-  async initializeMeeting(meetingId: string): Promise<boolean> {
+  // Event management
+  addEventListener(type: MeetingEventType, callback: (event: MeetingEvent) => void): void {
+    if (!this.eventListeners.has(type)) {
+      this.eventListeners.set(type, []);
+    }
+    this.eventListeners.get(type)!.push(callback);
+  }
+
+  removeEventListener(type: MeetingEventType, callback: (event: MeetingEvent) => void): void {
+    const listeners = this.eventListeners.get(type);
+    if (listeners) {
+      const index = listeners.indexOf(callback);
+      if (index > -1) {
+        listeners.splice(index, 1);
+      }
+    }
+  }
+
+  private emitEvent(type: MeetingEventType, data?: any, participantId?: string): void {
+    const event: MeetingEvent = {
+      type,
+      data,
+      timestamp: new Date(),
+      participantId,
+    };
+
+    const listeners = this.eventListeners.get(type);
+    if (listeners) {
+      listeners.forEach(callback => callback(event));
+    }
+  }
+
+  async initializeMeeting(meetingId: string, settings?: Partial<MeetingSettings>): Promise<boolean> {
     try {
       const { user } = useAuthStore.getState();
       if (!user) throw new Error('User not authenticated');
 
       this.meetingId = meetingId;
-      const peerId = `${user.id}-${Date.now()}`;
+      this.settings = { ...this.settings, ...settings };
+      
+      const peerId = `${user.id}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
 
       this.peer = new Peer(peerId, {
         host: import.meta.env.VITE_PEER_HOST || 'peerjs.com',
         port: import.meta.env.VITE_PEER_PORT ? Number(import.meta.env.VITE_PEER_PORT) : 443,
-        path: '/',
+        path: import.meta.env.VITE_PEER_PATH || '/',
         secure: true,
         config: {
           iceServers: [
@@ -71,8 +152,10 @@ export class MeetingService {
             },
           ],
           iceCandidatePoolSize: 10,
+          bundlePolicy: 'balanced',
+          rtcpMuxPolicy: 'require',
         },
-        debug: 2,
+        debug: import.meta.env.DEV ? 2 : 0,
       });
 
       await this.setupPeerEventHandlers();
@@ -84,27 +167,38 @@ export class MeetingService {
       addParticipant({
         id: peerId,
         name: user.name,
+        email: user.email,
         stream: this.localStream || undefined,
         isAudioEnabled: true,
         isVideoEnabled: true,
+        isScreenSharing: false,
+        isHandRaised: false,
         isHost: true,
+        connectionStatus: 'connected',
+        joinedAt: new Date(),
+        lastActive: new Date(),
+        networkQuality: 'excellent',
+        peerId,
       });
 
       await this.notifyServerJoin(meetingId, peerId);
 
       this.isInitialized = true;
+      this.emitEvent('participant-joined', { participantId: peerId });
       return true;
     } catch (error) {
       console.error('Failed to initialize meeting:', error);
+      this.emitEvent('error', { error: error instanceof Error ? error.message : 'Initialization failed' });
       return false;
     }
   }
 
   private async notifyServerJoin(meetingId: string, peerId: string): Promise<void> {
     try {
-      await api.notifyJoin(meetingId, peerId);
+      await api.joinMeeting(meetingId, { peerId });
     } catch (error) {
       console.error('Failed to notify server about join:', error);
+      this.emitEvent('error', { error: 'Failed to connect to server' });
     }
   }
 
@@ -122,7 +216,7 @@ export class MeetingService {
       });
 
       this.peer.on('call', this.handleIncomingCall);
-      this.peer.on('connection', this.handlePeerConnection);
+      this.peer.on('connection', this.handleDataConnection);
 
       this.peer.on('error', (error) => {
         console.error('Peer error:', error);
@@ -144,20 +238,30 @@ export class MeetingService {
         if (!this.isInitialized) {
           reject(new Error('Peer connection timeout'));
         }
-      }, 10000);
+      }, 15000);
     });
   }
 
   private handlePeerError(error: any): void {
     const { setError } = useMeetingStore.getState();
     
-    if (error.type === 'peer-unavailable') {
-      setError('Peer is not available. They may have left the meeting.');
-    } else if (error.type === 'network') {
-      setError('Network error. Please check your connection.');
-      this.handleDisconnection();
-    } else {
-      setError('Connection error. Please try rejoining the meeting.');
+    switch (error.type) {
+      case 'peer-unavailable':
+        this.emitEvent('error', { error: 'Peer is not available. They may have left the meeting.' });
+        break;
+      case 'network':
+        this.emitEvent('error', { error: 'Network error. Attempting to reconnect...' });
+        this.handleDisconnection();
+        break;
+      case 'server-error':
+        this.emitEvent('error', { error: 'Server error. Please try rejoining the meeting.' });
+        break;
+      case 'socket-error':
+        this.emitEvent('error', { error: 'Connection error. Checking network...' });
+        this.handleDisconnection();
+        break;
+      default:
+        this.emitEvent('error', { error: 'Connection error. Please try rejoining the meeting.' });
     }
   }
 
@@ -166,6 +270,8 @@ export class MeetingService {
       this.reconnectAttempts++;
       const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
       
+      this.emitEvent('reconnecting', { attempt: this.reconnectAttempts, maxAttempts: this.maxReconnectAttempts });
+
       if (this.reconnectTimeout) {
         clearTimeout(this.reconnectTimeout);
       }
@@ -174,8 +280,7 @@ export class MeetingService {
         this.reconnectPeer();
       }, delay);
     } else {
-      const { setError } = useMeetingStore.getState();
-      setError('Connection lost. Please refresh the page to rejoin.');
+      this.emitEvent('error', { error: 'Connection lost. Please refresh the page to rejoin.' });
     }
   }
 
@@ -183,6 +288,7 @@ export class MeetingService {
     if (this.peer && !this.peer.destroyed) {
       try {
         this.peer.reconnect();
+        this.emitEvent('reconnected');
       } catch (error) {
         console.error('Failed to reconnect peer:', error);
         this.handleDisconnection();
@@ -193,19 +299,8 @@ export class MeetingService {
   private async getLocalStream(): Promise<void> {
     try {
       const constraints = {
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-          facingMode: 'user',
-        },
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 48000,
-          channelCount: 2,
-        },
+        video: this.getVideoConstraints(),
+        audio: this.getAudioConstraints(),
       };
 
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -218,12 +313,61 @@ export class MeetingService {
         });
       } catch (fallbackError) {
         console.error('Fallback media access failed:', fallbackError);
+        this.emitEvent('error', { error: 'Failed to access camera and microphone' });
         throw fallbackError;
       }
     }
   }
 
-  private handleIncomingCall(call: any): void {
+  private getVideoConstraints(): MediaTrackConstraints {
+    const baseConstraints: MediaTrackConstraints = {
+      facingMode: 'user',
+    };
+
+    switch (this.settings.quality) {
+      case 'low':
+        return {
+          ...baseConstraints,
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 15 },
+        };
+      case 'medium':
+        return {
+          ...baseConstraints,
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 24 },
+        };
+      case 'high':
+        return {
+          ...baseConstraints,
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30 },
+        };
+      case 'auto':
+      default:
+        return {
+          ...baseConstraints,
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 },
+          frameRate: { ideal: 30, max: 60 },
+        };
+    }
+  }
+
+  private getAudioConstraints(): MediaTrackConstraints {
+    return {
+      echoCancellation: this.settings.echoCancellation,
+      noiseSuppression: this.settings.noiseSuppression,
+      autoGainControl: this.settings.autoGainControl,
+      sampleRate: 48000,
+      channelCount: 2,
+    };
+  }
+
+  private handleIncomingCall(call: MediaConnection): void {
     console.log('Incoming call from:', call.peer);
     if (!this.localStream) return;
 
@@ -233,40 +377,78 @@ export class MeetingService {
     call.on('stream', (remoteStream: MediaStream) => {
       console.log('Received remote stream:', call.peer);
       this.addRemoteParticipant(call.peer, remoteStream);
+      this.emitEvent('stream-added', { peerId: call.peer, stream: remoteStream });
     });
 
     call.on('close', () => {
       this.removeParticipant(call.peer);
       this.calls.delete(call.peer);
+      this.emitEvent('stream-removed', { peerId: call.peer });
     });
 
     call.on('error', (error: any) => {
       console.error('Call error:', error);
       this.removeParticipant(call.peer);
       this.calls.delete(call.peer);
+      this.emitEvent('error', { error: `Call error with ${call.peer}` });
     });
   }
 
-  private handlePeerConnection(conn: any): void {
+  private handleDataConnection(conn: DataConnection): void {
     console.log('Data connection from:', conn.peer);
+    this.dataConnections.set(conn.peer, conn);
     
     conn.on('data', (data: any) => {
-      if (data.type === 'chat') {
-        const { addMessage } = useMeetingStore.getState();
-        addMessage(data.sender, data.message);
-      } else if (data.type === 'participant-update') {
-        const { updateParticipant } = useMeetingStore.getState();
-        updateParticipant(data.participantId, data.updates);
-      }
+      this.handleDataMessage(conn.peer, data);
     });
 
     conn.on('close', () => {
       console.log('Data connection closed:', conn.peer);
+      this.dataConnections.delete(conn.peer);
     });
 
     conn.on('error', (error: any) => {
       console.error('Data connection error:', error);
+      this.dataConnections.delete(conn.peer);
     });
+  }
+
+  private handleDataMessage(peerId: string, data: any): void {
+    switch (data.type) {
+      case 'chat':
+        this.emitEvent('chat-message', {
+          message: data.message,
+          senderId: peerId,
+          senderName: data.senderName,
+          timestamp: new Date(data.timestamp),
+        });
+        break;
+
+      case 'participant-update':
+        const { updateParticipant } = useMeetingStore.getState();
+        updateParticipant(data.participantId, data.updates);
+        this.emitEvent('participant-updated', { participantId: data.participantId, updates: data.updates });
+        break;
+
+      case 'hand-raised':
+        this.emitEvent('hand-raised', { participantId: peerId });
+        break;
+
+      case 'hand-lowered':
+        this.emitEvent('hand-lowered', { participantId: peerId });
+        break;
+
+      case 'screen-share-started':
+        this.emitEvent('screen-share-started', { participantId: peerId });
+        break;
+
+      case 'screen-share-ended':
+        this.emitEvent('screen-share-ended', { participantId: peerId });
+        break;
+
+      default:
+        console.log('Unknown data message type:', data.type);
+    }
   }
 
   private addRemoteParticipant(peerId: string, stream: MediaStream): void {
@@ -277,13 +459,21 @@ export class MeetingService {
       stream,
       isAudioEnabled: true,
       isVideoEnabled: true,
+      isScreenSharing: false,
+      isHandRaised: false,
       isHost: false,
+      connectionStatus: 'connected',
+      joinedAt: new Date(),
+      lastActive: new Date(),
+      networkQuality: 'good',
+      peerId,
     });
   }
 
   private removeParticipant(peerId: string): void {
     const { removeParticipant } = useMeetingStore.getState();
     removeParticipant(peerId);
+    this.emitEvent('participant-left', { participantId: peerId });
   }
 
   async callPeer(peerId: string): Promise<boolean> {
@@ -295,24 +485,34 @@ export class MeetingService {
 
       this.calls.set(peerId, call);
 
+      // Set up data connection
+      const dataConn = this.peer.connect(peerId);
+      this.dataConnections.set(peerId, dataConn);
+
       call.on('stream', (remoteStream: MediaStream) => {
         this.addRemoteParticipant(peerId, remoteStream);
+        this.emitEvent('stream-added', { peerId, stream: remoteStream });
       });
 
       call.on('close', () => {
         this.removeParticipant(peerId);
         this.calls.delete(peerId);
+        this.dataConnections.delete(peerId);
+        this.emitEvent('stream-removed', { peerId });
       });
 
       call.on('error', (error: any) => {
         console.error('Call error:', error);
         this.removeParticipant(peerId);
         this.calls.delete(peerId);
+        this.dataConnections.delete(peerId);
+        this.emitEvent('error', { error: `Call error with ${peerId}` });
       });
 
       return true;
     } catch (error) {
       console.error('Error calling peer:', error);
+      this.emitEvent('error', { error: `Failed to connect to peer ${peerId}` });
       return false;
     }
   }
@@ -321,31 +521,31 @@ export class MeetingService {
     if (!this.localStream) return false;
     const audioTracks = this.localStream.getAudioTracks();
     const isEnabled = audioTracks[0]?.enabled ?? true;
+    const newState = !isEnabled;
 
-    audioTracks.forEach(track => (track.enabled = !isEnabled));
+    audioTracks.forEach(track => (track.enabled = newState));
     const { toggleAudio } = useMeetingStore.getState();
     toggleAudio();
 
-    this.notifyParticipantUpdate({ isAudioEnabled: !isEnabled });
-
-    return !isEnabled;
+    this.broadcastParticipantUpdate({ isAudioEnabled: newState });
+    return newState;
   }
 
   toggleVideo(): boolean {
     if (!this.localStream) return false;
     const videoTracks = this.localStream.getVideoTracks();
     const isEnabled = videoTracks[0]?.enabled ?? true;
+    const newState = !isEnabled;
 
-    videoTracks.forEach(track => (track.enabled = !isEnabled));
+    videoTracks.forEach(track => (track.enabled = newState));
     const { toggleVideo } = useMeetingStore.getState();
     toggleVideo();
 
-    this.notifyParticipantUpdate({ isVideoEnabled: !isEnabled });
-
-    return !isEnabled;
+    this.broadcastParticipantUpdate({ isVideoEnabled: newState });
+    return newState;
   }
 
-  private notifyParticipantUpdate(updates: Partial<Participant>): void {
+  private broadcastParticipantUpdate(updates: Partial<Participant>): void {
     if (!this.peer) return;
 
     const data = {
@@ -354,10 +554,8 @@ export class MeetingService {
       updates,
     };
 
-    for (const [, call] of this.calls) {
-      if (call.connection) {
-        call.connection.send(data);
-      }
+    for (const [, conn] of this.dataConnections) {
+      conn.send(data);
     }
   }
 
@@ -366,17 +564,23 @@ export class MeetingService {
       const { isScreenSharing, toggleScreenSharing } = useMeetingStore.getState();
 
       if (!isScreenSharing) {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        this.screenStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
             displaySurface: 'monitor',
+            width: { ideal: 1920, max: 1920 },
+            height: { ideal: 1080, max: 1080 },
+            frameRate: { ideal: 30, max: 30 },
           } as MediaTrackConstraints,
-          audio: true,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+          },
         });
 
-        const videoTrack = screenStream.getVideoTracks()[0];
+        const videoTrack = this.screenStream.getVideoTracks()[0];
 
         for (const [, call] of this.calls) {
-          const sender = call.peerConnection.getSenders().find((s: any) => s.track?.kind === 'video');
+          const sender = call.peerConnection.getSenders().find(s => s.track?.kind === 'video');
           if (sender) await sender.replaceTrack(videoTrack);
         }
 
@@ -394,30 +598,26 @@ export class MeetingService {
         }
 
         toggleScreenSharing();
+        this.broadcastDataMessage({ type: 'screen-share-started' });
+        this.emitEvent('screen-share-started', { participantId: this.peer?.id });
         return true;
       } else {
         return await this.stopScreenShare();
       }
     } catch (error) {
       console.error('Screen share toggle error:', error);
+      this.emitEvent('error', { error: 'Failed to toggle screen sharing' });
       return false;
     }
   }
 
   private async stopScreenShare(): Promise<boolean> {
     try {
-      const cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-          facingMode: 'user',
-        },
-      });
+      const cameraStream = await navigator.mediaDevices.getUserMedia(this.getMediaConstraints());
       const cameraTrack = cameraStream.getVideoTracks()[0];
 
       for (const [, call] of this.calls) {
-        const sender = call.peerConnection.getSenders().find((s: any) => s.track?.kind === 'video');
+        const sender = call.peerConnection.getSenders().find(s => s.track?.kind === 'video');
         if (sender) await sender.replaceTrack(cameraTrack);
       }
 
@@ -430,13 +630,29 @@ export class MeetingService {
         this.localStream.addTrack(cameraTrack);
       }
 
+      if (this.screenStream) {
+        this.screenStream.getTracks().forEach(track => track.stop());
+        this.screenStream = null;
+      }
+
       const { toggleScreenSharing } = useMeetingStore.getState();
       toggleScreenSharing();
+      this.broadcastDataMessage({ type: 'screen-share-ended' });
+      this.emitEvent('screen-share-ended', { participantId: this.peer?.id });
 
       return true;
     } catch (error) {
       console.error('Failed to stop screen sharing:', error);
+      this.emitEvent('error', { error: 'Failed to stop screen sharing' });
       return false;
+    }
+  }
+
+  private broadcastDataMessage(data: any): void {
+    if (!this.peer) return;
+
+    for (const [, conn] of this.dataConnections) {
+      conn.send(data);
     }
   }
 
@@ -449,10 +665,19 @@ export class MeetingService {
       this.localStream.getTracks().forEach(track => track.stop());
     }
 
+    if (this.screenStream) {
+      this.screenStream.getTracks().forEach(track => track.stop());
+    }
+
     for (const [, call] of this.calls) {
       call.close();
     }
     this.calls.clear();
+
+    for (const [, conn] of this.dataConnections) {
+      conn.close();
+    }
+    this.dataConnections.clear();
 
     if (this.peer) {
       this.peer.destroy();

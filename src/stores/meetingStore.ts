@@ -9,10 +9,18 @@ export interface Message {
 export interface Participant {
   id: string;
   name: string;
+  email?: string;
   stream?: MediaStream;
   isAudioEnabled: boolean;
   isVideoEnabled: boolean;
+  isScreenSharing: boolean;
+  isHandRaised: boolean;
   isHost?: boolean;
+  connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+  joinedAt: Date;
+  lastActive: Date;
+  networkQuality: 'excellent' | 'good' | 'fair' | 'poor';
+  peerId: string;
 }
 
 interface MeetingState {
